@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>MEPTools3</Name>
+    <Assembly>MEPTools3.dll</Assembly>
+    <FullClassName>MEPTools.App</FullClassName>
+    <ClientId>35666D1E-08E3-49F0-B2CF-BB436F4A5E42</ClientId>
+    <VendorId>MEP</VendorId>
+    <VendorDescription>MEP Tools2</VendorDescription>
+  </AddIn>
+</RevitAddIns>

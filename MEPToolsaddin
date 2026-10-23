@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Command">
+    <Assembly>MEPTools.dll</Assembly>
+    <FullClassName>MEPTools.OffsetBend.CreateMEPOffsetBend</FullClassName>
+    <ClientId>A1111111-1111-1111-1111-111111111111</ClientId>
+    <Text>45° 翻弯</Text>
+    <Description>45° Z 形翻弯</Description>
+    <VendorId>MEP</VendorId>
+    <VendorDescription>MEP Tools</VendorDescription>
+  </AddIn>
+
+  <AddIn Type="Command">
+    <Assembly>MEPTools.dll</Assembly>
+    <FullClassName>MEPTools.UpDown.CreateMEPUpDown</FullClassName>
+    <ClientId>A2222222-2222-2222-2222-222222222222</ClientId>
+    <Text>45° 抬升/下降</Text>
+    <Description>45° 单侧抬升或下降</Description>
+    <VendorId>MEP</VendorId>
+    <VendorDescription>MEP Tools</VendorDescription>
+  </AddIn>
+
+  <AddIn Type="Command">
+    <Assembly>MEPTools.dll</Assembly>
+    <FullClassName>MEPTools.AlignBottomElevation.AlignMEPBottomElevationCommand</FullClassName>
+    <ClientId>A3333333-3333-3333-3333-333333333333</ClientId>
+    <Text>底部平齐</Text>
+    <Description>将预选 MEP 元素的底部标高对齐到基准元素</Description>
+    <VendorId>MEP</VendorId>
+    <VendorDescription>MEP Tools</VendorDescription>
+  </AddIn>
+
+  <AddIn Type="Command">
+    <Assembly>MEPTools.dll</Assembly>
+    <FullClassName>MEPTools.GroupSortAlign.MEPGroupSortAlignCommand</FullClassName>
+    <ClientId>A4444444-4444-4444-4444-444444444444</ClientId>
+    <Text>分组排序对齐</Text>
+    <Description>按底部标高分组，组内按净间距排布</Description>
+    <VendorId>MEP</VendorId>
+    <VendorDescription>MEP Tools</VendorDescription>
+  </AddIn>
+</RevitAddIns>
