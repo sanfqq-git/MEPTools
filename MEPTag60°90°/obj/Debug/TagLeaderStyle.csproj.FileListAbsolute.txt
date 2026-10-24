@@ -1,0 +1,6 @@
+F:\0-Sanf\0-Src\MEPTools\MEPTag60°90°\bin\Debug\TagLeaderStyle.dll
+F:\0-Sanf\0-Src\MEPTools\MEPTag60°90°\bin\Debug\TagLeaderStyle.pdb
+F:\0-Sanf\0-Src\MEPTools\MEPTag60°90°\obj\Debug\TagLeaderStyle.csproj.AssemblyReference.cache
+F:\0-Sanf\0-Src\MEPTools\MEPTag60°90°\obj\Debug\TagLeaderStyle.csproj.CoreCompileInputs.cache
+F:\0-Sanf\0-Src\MEPTools\MEPTag60°90°\obj\Debug\TagLeaderStyle.dll
+F:\0-Sanf\0-Src\MEPTools\MEPTag60°90°\obj\Debug\TagLeaderStyle.pdb

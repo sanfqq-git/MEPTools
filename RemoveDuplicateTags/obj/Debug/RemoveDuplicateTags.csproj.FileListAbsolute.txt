@@ -1,0 +1,6 @@
+F:\0-Sanf\0-Src\MEPTools\RemoveDuplicateTags\bin\Debug\RemoveDuplicateTags.dll
+F:\0-Sanf\0-Src\MEPTools\RemoveDuplicateTags\bin\Debug\RemoveDuplicateTags.pdb
+F:\0-Sanf\0-Src\MEPTools\RemoveDuplicateTags\obj\Debug\RemoveDuplicateTags.csproj.AssemblyReference.cache
+F:\0-Sanf\0-Src\MEPTools\RemoveDuplicateTags\obj\Debug\RemoveDuplicateTags.csproj.CoreCompileInputs.cache
+F:\0-Sanf\0-Src\MEPTools\RemoveDuplicateTags\obj\Debug\RemoveDuplicateTags.dll
+F:\0-Sanf\0-Src\MEPTools\RemoveDuplicateTags\obj\Debug\RemoveDuplicateTags.pdb

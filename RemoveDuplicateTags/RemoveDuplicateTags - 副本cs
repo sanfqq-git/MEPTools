@@ -1,0 +1,257 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using Autodesk.Revit.Attributes;
+using Autodesk.Revit.DB;
+using Autodesk.Revit.UI;
+using Autodesk.Revit.UI.Selection;
+
+namespace RemoveDuplicateTags
+{
+    [Transaction(TransactionMode.Manual)]
+    public class RemoveDuplicateTagsCommand : IExternalCommand
+    {
+        public Result Execute(
+            ExternalCommandData commandData,
+            ref string message,
+            ElementSet elements)
+        {
+            UIApplication uiapp = commandData.Application;
+            UIDocument uidoc = uiapp.ActiveUIDocument;
+            Document doc = uidoc.Document;
+            View activeView = doc.ActiveView;
+
+            // 1. 获取用户预选的元素
+            ICollection<ElementId> selectedIds = uidoc.Selection.GetElementIds();
+
+            if (selectedIds.Count == 0)
+            {
+                TaskDialog.Show("提示", "请先在视图中选择要检查的 Generic Models（可多选）。\n本工具仅处理选中的元素。");
+                return Result.Cancelled;
+            }
+
+            // 2. 收集当前活动视图中的所有独立标签 (IndependentTag)
+            List<IndependentTag> allTags = new FilteredElementCollector(doc, activeView.Id)
+                .OfClass(typeof(IndependentTag))
+                .Cast<IndependentTag>()
+                .ToList();
+
+            // 3. 建立字典：Key = (宿主ID, 标签类型ID)，Value = 标签列表
+            var tagDict = new Dictionary<(ElementId, ElementId), List<IndependentTag>>();
+
+            foreach (var tag in allTags)
+            {
+                if (tag.IsHidden(activeView)) continue;
+
+                // 获取标签的宿主元素 (Revit 2022 推荐 API)
+                ISet<ElementId> hostIds = tag.GetTaggedLocalElementIds();
+                if (hostIds == null || hostIds.Count == 0) continue;
+
+                ElementId hostId = hostIds.First();
+
+                // 只处理用户预选的元素
+                if (!selectedIds.Contains(hostId)) continue;
+
+                ElementId tagTypeId = tag.GetTypeId();
+                if (tagTypeId == ElementId.InvalidElementId) continue;
+
+                var key = (hostId, tagTypeId);
+
+                if (!tagDict.ContainsKey(key))
+                {
+                    tagDict[key] = new List<IndependentTag>();
+                }
+                tagDict[key].Add(tag);
+            }
+
+            // 4. 筛选重复标签，并找出多余的
+            List<IndependentTag> extraTags = new List<IndependentTag>();
+            int duplicateHostCount = 0;
+            
+            // 用于生成诊断信息的 StringBuilder
+            StringBuilder diagInfo = new StringBuilder();
+            int debugPrintCount = 0; // 限制最多打印 5 个元素的详细信息，防弹窗过大
+
+            foreach (var kvp in tagDict)
+            {
+                var tagsOnHost = kvp.Value;
+                if (tagsOnHost.Count > 1) // 发现重复
+                {
+                    duplicateHostCount++;
+                    Element hostElem = doc.GetElement(kvp.Key.Item1);
+
+                    // 按【优先级】排序：
+                    // 先找水平Leader (优先级0)，如果没有，再按距离排序 (优先级100+距离)
+                    var sortedTags = tagsOnHost
+                        .OrderBy(t => GetTagPriority(t, hostElem, activeView))
+                        .ToList();
+
+                    // 保留第 0 个（最高优先级），从第 1 个开始加入多余列表
+                    for (int i = 1; i < sortedTags.Count; i++)
+                    {
+                        extraTags.Add(sortedTags[i]);
+                    }
+
+                    // 生成诊断信息（限制前5个）
+                    if (debugPrintCount < 5)
+                    {
+                        string hostName = GetElementFriendlyName(hostElem);
+                        diagInfo.AppendLine($"\n▶ 宿主: {hostName}");
+                        
+                        var keepTag = sortedTags[0];
+                        diagInfo.AppendLine($"  [保留] ID: {keepTag.Id} (优先级分数: {GetTagPriority(keepTag, hostElem, activeView):F2})");
+                        
+                        for (int i = 1; i < sortedTags.Count; i++)
+                        {
+                            var delTag = sortedTags[i];
+                            diagInfo.AppendLine($"  [删除] ID: {delTag.Id} (优先级分数: {GetTagPriority(delTag, hostElem, activeView):F2})");
+                        }
+                        debugPrintCount++;
+                    }
+                }
+            }
+
+            // 5. 结果处理与高亮选中
+            if (extraTags.Count > 0)
+            {
+                List<ElementId> extraIds = extraTags.Select(t => t.Id).ToList();
+                
+                // 在 Revit 界面中高亮选中
+                uidoc.Selection.SetElementIds(extraIds);
+
+                // 拼接最终提示文字
+                StringBuilder msg = new StringBuilder();
+                msg.AppendLine($"发现 {duplicateHostCount} 个元素存在重复标签。");
+                msg.AppendLine($"已为您高亮选中 {extraTags.Count} 个多余的标签。");
+                msg.AppendLine("请检查确认后，按键盘上的 [Delete] 键进行删除。\n");
+                
+                msg.AppendLine("====================");
+                msg.AppendLine("详细诊断信息（仅显示前5个）：");
+                msg.Append(diagInfo.ToString());
+                
+                if (duplicateHostCount > 5)
+                {
+                    msg.AppendLine($"\n... 还有 {duplicateHostCount - 5} 个元素存在重复标签，不再逐一显示。");
+                }
+
+                TaskDialog.Show("检查完成", msg.ToString());
+                
+                return Result.Succeeded;
+            }
+            else
+            {
+                TaskDialog.Show("检查完成", "在选中的元素中，未发现重复的标签。");
+                return Result.Cancelled;
+            }
+        }
+
+        /// <summary>
+        /// 获取标签的保留优先级（值越小越优先保留）
+        /// </summary>
+        private double GetTagPriority(IndependentTag tag, Element hostElem, View activeView)
+        {
+            // 1. 如果没有引线，直接按距离排
+            if (!tag.HasLeader)
+            {
+                return 100.0 + CalculateDistance(tag, hostElem);
+            }
+
+            // 2. 只有在 Free 状态下，肘部（折点）才可用，才有可能是水平折线
+            if (tag.LeaderEndCondition == LeaderEndCondition.Free)
+            {
+                try
+                {
+                    // Revit 2022 推荐使用 GetTaggedReferences() 获取引线参照
+                    IList<Reference> refs = tag.GetTaggedReferences();
+                    if (refs != null)
+                    {
+                        // 遍历该标签指向的所有引线，只要有一根是水平的，就认为合格
+                        foreach (var reference in refs)
+                        {
+                            XYZ head = tag.TagHeadPosition;
+                            // 使用未过时的 API 获取 Leader 折点
+                            XYZ elbow = tag.GetLeaderElbow(reference);
+                            
+                            if (elbow == null) continue;
+
+                            XYZ vec = elbow - head;
+                            if (vec.GetLength() > 0.001)
+                            {
+                                XYZ dir = vec.Normalize();
+                                // 判断是否水平：与当前视图向右方向(RightDirection)点乘
+                                // 使用 0.999 的高精度容差，确保绝对水平
+                                if (Math.Abs(dir.DotProduct(activeView.RightDirection)) > 0.999)
+                                {
+                                    return 0.0; // 找到水平引线，优先级最高
+                                }
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                    // 忽略异常，视作无水平引线
+                }
+            }
+
+            // 3. 没有引线，或者引线都是斜的，按距离计算（100 + 距离）
+            return 100.0 + CalculateDistance(tag, hostElem);
+        }
+
+        /// <summary>
+        /// 计算标签头部到宿主元素中心点的距离
+        /// </summary>
+        private double CalculateDistance(IndependentTag tag, Element hostElem)
+        {
+            if (hostElem == null) return double.MaxValue;
+
+            XYZ tagPosition = tag.TagHeadPosition;
+            XYZ hostCenter = GetElementCenter(hostElem);
+
+            if (hostCenter == null) return double.MaxValue;
+
+            return tagPosition.DistanceTo(hostCenter);
+        }
+
+        /// <summary>
+        /// 获取元素的位置中心点（兼容点状和线状图元）
+        /// </summary>
+        private XYZ GetElementCenter(Element elem)
+        {
+            if (elem.Location is LocationPoint locPoint)
+            {
+                return locPoint.Point;
+            }
+            else if (elem.Location is LocationCurve locCurve)
+            {
+                Curve curve = locCurve.Curve;
+                if (curve != null)
+                {
+                    return curve.Evaluate(0.5, true);
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// 获取友好的元素名称（用于诊断信息显示）
+        /// </summary>
+        private string GetElementFriendlyName(Element elem)
+        {
+            if (elem == null) return "未知元素";
+
+            if (elem is FamilyInstance fi)
+            {
+                return $"族: {fi.Symbol.Family.Name}, 类型: {fi.Name}";
+            }
+            
+            if (elem.Category != null)
+            {
+                return $"类别: {elem.Category.Name}";
+            }
+
+            return $"ID: {elem.Id}";
+        }
+    }
+}
