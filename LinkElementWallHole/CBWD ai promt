@@ -7,6 +7,15 @@
 功能描述：选择LINK的元素进行批量开墙孔（墙孔使用一个Generic Models代替，即选择一次加一个合适的Generic Models），此功能主要是辅助算空大小的。
 选择的元素是一个LINK文件，墙在一个link文件，将选择的元素计算大小后在相交的墙上加一个Generic Models族。
 
+
+功能描述：选择墙孔和设备更新的功能。
+逻辑：
+1.提示用户选择LINK文件中的元素（仅可选择的3种管道类型为：duct & pipe & cable tray）
+2.选择Generic Models族
+3.更新Generic Models族的大小和位置
+
+
+
 计算大小：
 1.duct & pipe & cable tray (要获取保温，因为是从保温外皮开始算) 是每边加100mm（注意：比如两条500m'm*500mm，保温32mm的DUCT，不能简单的使用管径加减法计算，因为不知道管间距多少）
 2.需要获取到duct & pipe & cable tray 的管边或者保温边界，把所选择的元素汇总边界，取最外的边框作为Generic Models族的大小

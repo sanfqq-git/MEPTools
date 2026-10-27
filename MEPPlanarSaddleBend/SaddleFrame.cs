@@ -1,7 +1,7 @@
 using System;
 using Autodesk.Revit.DB;
 
-namespace MEPTools.SaddleBend
+namespace MEPTools.MEPPlanarSaddleBend
 {
     /// <summary>多管共用参考系，由 参考管 + P1 + P2 + H + θ 唯一确定。</summary>
     public class SaddleFrame

@@ -8,11 +8,11 @@ using Autodesk.Revit.DB.Plumbing;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
 
-namespace MEPTools.CrossConnect
+namespace MEPTools.MEP3TeeCrossConnect
 {
     [Transaction(TransactionMode.Manual)]
     [Regeneration(RegenerationOption.Manual)]
-    public class CreateMEPCrossConnect : IExternalCommand
+    public class Command : IExternalCommand
     {
         private readonly StringBuilder debugInfo = new StringBuilder();
 

@@ -4,7 +4,7 @@ using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
 
-namespace MEPTools.LateralBend
+namespace MEPTools.MEPPlanarLateralBend
 {
     public enum MEPElementType { Pipe, Duct, CableTray, Unknown }
 

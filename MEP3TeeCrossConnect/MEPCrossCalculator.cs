@@ -5,7 +5,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
 
-namespace MEPTools.CrossConnect
+namespace MEPTools.MEP3TeeCrossConnect
 {
     public enum CrossElementType { Pipe, Duct, Unknown }
 

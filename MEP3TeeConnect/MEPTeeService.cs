@@ -4,7 +4,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
 
-namespace MEPTools.TeeConnect
+namespace MEPTools.MEP3TeeConnect
 {
     /// <summary>
     /// 单对 T 形处理流程：

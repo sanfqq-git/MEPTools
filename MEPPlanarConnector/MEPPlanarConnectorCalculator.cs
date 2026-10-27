@@ -5,7 +5,7 @@ using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
 
-namespace MEPTools.PlanarConnector
+namespace MEPTools.MEPPlanarConnector
 {
     public enum MEPElementType { Pipe, Duct, CableTray, Unknown }
 

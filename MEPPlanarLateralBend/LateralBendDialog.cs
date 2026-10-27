@@ -4,7 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 
-namespace MEPTools.LateralBend
+namespace MEPTools.MEPPlanarLateralBend
 {
     /// <summary>LateralBend 参数输入窗（纯代码构建，无需 XAML）</summary>
     public class LateralBendDialog : Window

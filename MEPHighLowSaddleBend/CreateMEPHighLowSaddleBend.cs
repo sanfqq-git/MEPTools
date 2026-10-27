@@ -17,7 +17,7 @@ namespace MEPTools.MEPHighLowSaddleBend
 {
     [Transaction(TransactionMode.Manual)]
     [Regeneration(RegenerationOption.Manual)]
-    public class CreateMEPOffsetBend : IExternalCommand
+    public class Command : IExternalCommand
     {
         private readonly StringBuilder debugInfo = new StringBuilder();
 

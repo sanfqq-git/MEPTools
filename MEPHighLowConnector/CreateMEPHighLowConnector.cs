@@ -15,7 +15,7 @@ namespace MEPTools.MEPHighLowConnector
 {
     [Transaction(TransactionMode.Manual)]
     [Regeneration(RegenerationOption.Manual)]
-    public class CreateMEPConnector : IExternalCommand
+    public class Command : IExternalCommand
     {
         public Result Execute(ExternalCommandData commandData,
             ref string message, ElementSet elements)

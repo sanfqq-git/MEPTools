@@ -2,7 +2,7 @@ using System;
 using System.IO;
 using System.Text;
 
-namespace MEPTools.LateralBend
+namespace MEPTools.MEPPlanarLateralBend
 {
     /// <summary>
     /// 轻量日志调试类：把调试信息同时累积到内存（供 TaskDialog 弹窗展示）

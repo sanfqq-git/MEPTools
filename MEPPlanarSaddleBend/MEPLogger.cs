@@ -2,7 +2,7 @@ using System;
 using System.IO;
 using System.Text;
 
-namespace MEPTools.SaddleBend
+namespace MEPTools.MEPPlanarSaddleBend
 {
     /// <summary>
     /// 轻量日志：内存累积 + 即时写文件。所有 I/O 都 try/catch，

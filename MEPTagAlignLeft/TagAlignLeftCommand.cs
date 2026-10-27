@@ -5,8 +5,9 @@ using System.Reflection;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
+using MEPTools.Shared;
 
-namespace TagAlignLeft
+namespace MEPTools.MEPTagAlignLeft
 {
     [Transaction(TransactionMode.Manual)]
     [Regeneration(RegenerationOption.Manual)]

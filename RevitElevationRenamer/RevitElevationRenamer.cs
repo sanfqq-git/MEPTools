@@ -10,11 +10,11 @@ using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
 using TextBox = System.Windows.Controls.TextBox;
 
-namespace RevitElevationRenamer
+namespace MEPTools.RevitElevationRenamer
 {
     [Transaction(TransactionMode.Manual)]
     [Regeneration(RegenerationOption.Manual)]
-    public class ElevationRenamerCommand : IExternalCommand
+    public class Command : IExternalCommand
     {
         public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
         {

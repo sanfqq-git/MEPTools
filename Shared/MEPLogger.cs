@@ -2,7 +2,7 @@ using System;
 using System.IO;
 using System.Text;
 
-namespace MEPTools.Common
+namespace MEPTools.Shared
 {
     /// <summary>
     /// 全局日志工具（单例）。各功能模块共享同一份日志实例，

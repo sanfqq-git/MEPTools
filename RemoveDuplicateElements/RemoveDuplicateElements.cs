@@ -7,10 +7,10 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
 
-namespace RemoveDuplicateElements
+namespace MEPTools.RemoveDuplicateElements
 {
     [Transaction(TransactionMode.Manual)]
-    public class RemoveDuplicateCommand : IExternalCommand
+    public class Command : IExternalCommand
     {
         public Result Execute(
             ExternalCommandData commandData,

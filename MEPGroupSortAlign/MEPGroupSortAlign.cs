@@ -12,11 +12,11 @@ using System.Drawing;
 using Point = System.Drawing.Point;
 using WinForms = System.Windows.Forms;
 
-namespace MEPTools.GroupSortAlign
+namespace MEPTools.MEPGroupSortAlign
 {
     [Transaction(TransactionMode.Manual)]
     [Regeneration(RegenerationOption.Manual)]
-    public class MEPGroupSortAlignCommand : IExternalCommand
+    public class Command : IExternalCommand
     {
         private const double DefaultSpacingMM = 50.0;
         private const double DefaultGroupToleranceMM = 25.0;

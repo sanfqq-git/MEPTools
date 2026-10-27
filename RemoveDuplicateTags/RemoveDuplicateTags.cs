@@ -10,7 +10,7 @@ using Autodesk.Revit.UI.Selection;
 namespace RemoveDuplicateTags
 {
     [Transaction(TransactionMode.Manual)]
-    public class RemoveDuplicateTagsCommand : IExternalCommand
+    public class Command : IExternalCommand
     {
         public Result Execute(
             ExternalCommandData commandData,

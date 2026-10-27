@@ -9,11 +9,11 @@ using Autodesk.Revit.DB.Plumbing;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
 
-namespace MEPTools.LateralBend
+namespace MEPTools.MEPPlanarLateralBend
 {
     [Transaction(TransactionMode.Manual)]
     [Regeneration(RegenerationOption.Manual)]
-    public class CreateMEPLateralBend : IExternalCommand
+    public class Command : IExternalCommand
     {
         private readonly MEPLogger debugInfo = MEPLogger.Instance;
 

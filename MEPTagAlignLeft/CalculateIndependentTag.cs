@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
 
-namespace TagAlignLeft
+namespace MEPTools.MEPTagAlignLeft
 {
     /// <summary>
     /// 计算类：基于 TagHeadPosition 计算"左对齐 + 按管序从上往下堆叠"的移动向量。

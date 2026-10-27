@@ -7,14 +7,14 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace RevitAddin.SystemChecker
+namespace MEPTools.SystemChecker
 {
     /// <summary>
     /// 外部命令入口：检测用户选中的 Duct/CableTray 是否与其他系统的管错误连接。
     /// 结果以非模态窗口展示，用户可继续操作 Revit，直到手动关闭窗口。
     /// </summary>
     [Transaction(TransactionMode.Manual)]
-    public class CheckMismatchedConnectionsCommand : IExternalCommand
+    public class Command : IExternalCommand
     {
         // ★ 静态字段持有窗口引用，防止被 GC 回收导致窗口突然消失
         private static SystemCheckerForm _currentWindow;

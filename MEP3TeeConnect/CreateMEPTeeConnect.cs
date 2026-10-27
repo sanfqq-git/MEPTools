@@ -8,11 +8,11 @@ using Autodesk.Revit.DB.Plumbing;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
 
-namespace MEPTools.TeeConnect
+namespace MEPTools.MEP3TeeConnect
 {
     [Transaction(TransactionMode.Manual)]
     [Regeneration(RegenerationOption.Manual)]
-    public class CreateMEPTeeConnect : IExternalCommand
+    public class Command : IExternalCommand
     {
         private readonly StringBuilder debugInfo = new StringBuilder();
 

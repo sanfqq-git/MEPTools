@@ -4,7 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 
-namespace MEPTools.SaddleBend
+namespace MEPTools.MEPPlanarSaddleBend
 {
     /// <summary>参数输入窗（纯代码构建，无需 XAML）。</summary>
     public class SaddleBendDialog : Window

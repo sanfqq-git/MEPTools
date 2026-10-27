@@ -6,12 +6,12 @@ using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
 
-// 公共日志（独立到 MEPTools.Common）
-using MEPTools.Common;
+// 公共日志（独立到 MEPTools.Shared）
+using MEPTools.Shared;
 // 解决 Connector 命名冲突（只保留一个别名）
 using Connector = Autodesk.Revit.DB.Connector;
 
-namespace MEPTools.PlanarConnector
+namespace MEPTools.MEPPlanarConnector
 {
     public class MEPPlanarConnectorService
     {

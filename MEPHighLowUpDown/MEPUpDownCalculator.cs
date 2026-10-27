@@ -5,7 +5,7 @@ using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
 using Connector = Autodesk.Revit.DB.Connector;
 
-namespace MEPTools.UpDown
+namespace MEPTools.MEPHighLowUpDown
 {
     /// <summary>MEP 管线类型</summary>
     public enum MEPElementType

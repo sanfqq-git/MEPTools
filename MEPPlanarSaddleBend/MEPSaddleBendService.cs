@@ -6,7 +6,7 @@ using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
 
-namespace MEPTools.SaddleBend
+namespace MEPTools.MEPPlanarSaddleBend
 {
     public class MEPSaddleBendService
     {

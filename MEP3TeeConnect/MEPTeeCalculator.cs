@@ -5,7 +5,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
 
-namespace MEPTools.TeeConnect
+namespace MEPTools.MEP3TeeConnect
 {
     public enum TeeElementType { Pipe, Duct, Unknown }
 

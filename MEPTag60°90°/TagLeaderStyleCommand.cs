@@ -7,7 +7,7 @@ namespace TagLeaderStyle
 {
     [Transaction(TransactionMode.Manual)]
     [Regeneration(RegenerationOption.Manual)]
-    public class TagLeaderStyleCommand : IExternalCommand
+    public class Command : IExternalCommand
     {
         public Result Execute(ExternalCommandData commandData,
                               ref string message,

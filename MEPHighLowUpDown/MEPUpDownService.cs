@@ -7,7 +7,7 @@ using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
 
-namespace MEPTools.UpDown
+namespace MEPTools.MEPHighLowUpDown
 {
     public class MEPUpDownService
     {

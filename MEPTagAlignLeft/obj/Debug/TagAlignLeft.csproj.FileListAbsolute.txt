@@ -1,6 +1,0 @@
-F:\0-Sanf\0-Src\MEPTools\MEPTagAlignLeft\bin\Debug\TagAlignLeft.dll
-F:\0-Sanf\0-Src\MEPTools\MEPTagAlignLeft\bin\Debug\TagAlignLeft.pdb
-F:\0-Sanf\0-Src\MEPTools\MEPTagAlignLeft\obj\Debug\TagAlignLeft.csproj.AssemblyReference.cache
-F:\0-Sanf\0-Src\MEPTools\MEPTagAlignLeft\obj\Debug\TagAlignLeft.csproj.CoreCompileInputs.cache
-F:\0-Sanf\0-Src\MEPTools\MEPTagAlignLeft\obj\Debug\TagAlignLeft.dll
-F:\0-Sanf\0-Src\MEPTools\MEPTagAlignLeft\obj\Debug\TagAlignLeft.pdb

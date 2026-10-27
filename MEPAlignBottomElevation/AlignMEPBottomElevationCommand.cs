@@ -9,10 +9,10 @@ using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
 
-namespace MEPTools.AlignBottomElevation
+namespace MEPTools.MEPAlignBottomElevation
 {
     [Transaction(TransactionMode.Manual)]
-    public class AlignMEPBottomElevationCommand : IExternalCommand
+    public class Command : IExternalCommand
     {
         // 嵌套过滤器，避免命名空间/文件遗漏问题
         public class MepElementSelectionFilter : ISelectionFilter

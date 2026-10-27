@@ -4,7 +4,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
 
-namespace MEPTools.CrossConnect
+namespace MEPTools.MEP3TeeCrossConnect
 {
     /// <summary>
     /// 单对处理流程（NewTeeFitting 需 3 个连接器）：
