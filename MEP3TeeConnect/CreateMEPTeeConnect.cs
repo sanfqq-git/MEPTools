@@ -96,8 +96,17 @@ namespace MEPTools.MEP3TeeConnect
                         ShowDebugInfo("几何校验失败", message);
                         return Result.Failed;
                     }
+
+                    bool isReducing = Math.Abs(p.DiameterA - p.DiameterB) > 1e-6
+                                      || Math.Abs(p.WidthA - p.WidthB) > 1e-6
+                                      || Math.Abs(p.HeightA - p.HeightB) > 1e-6;
+                    string sizeTag = isReducing
+                        ? $"[异径 A={FmtSize(p.DiameterA, p.WidthA, p.HeightA)} / B={FmtSize(p.DiameterB, p.WidthB, p.HeightB)}，" +
+                          $"立管取大={FmtSize(p.Diameter, p.Width, p.Height)}]"
+                        : $"[等径 {FmtSize(p.DiameterA, p.WidthA, p.HeightA)}]";
+
                     debugInfo.AppendLine(
-                        $"✓ 系统 {p.SystemName}：A={p.IdA.IntegerValue}，B={p.IdB.IntegerValue}，" +
+                        $"✓ 系统 {p.SystemName}：A={p.IdA.IntegerValue}，B={p.IdB.IntegerValue}，{sizeTag}，" +
                         $"交点=({p.CrossPoint.X:F3},{p.CrossPoint.Y:F3})，" +
                         $"高差={Math.Abs(p.ZA - p.ZB) * MEPTeeCalculator.FtToMm:F1}mm，" +
                         $"{(p.NeedExtend ? "需延长" : "需缩短")} B 的 {(p.ModifyB0 ? "b0" : "b1")} 端");
@@ -234,14 +243,18 @@ namespace MEPTools.MEP3TeeConnect
             if (p.LevelId == ElementId.InvalidElementId)
             { err = "无法确定 A 组标高"; return false; }
 
-            // 等径校验
-            string sizeErr;
-            if (!MEPTeeCalculator.AreEqualSize(elemA, elemB, p.ElemType, out sizeErr))
-            { err = sizeErr; return false; }
+            // ---------- 原始规格 ----------
+            p.DiameterA = MEPTeeCalculator.GetDiameter(elemA, p.ElemType);
+            p.DiameterB = MEPTeeCalculator.GetDiameter(elemB, p.ElemType);
+            p.WidthA = MEPTeeCalculator.GetWidth(elemA, p.ElemType);
+            p.WidthB = MEPTeeCalculator.GetWidth(elemB, p.ElemType);
+            p.HeightA = MEPTeeCalculator.GetHeight(elemA, p.ElemType);
+            p.HeightB = MEPTeeCalculator.GetHeight(elemB, p.ElemType);
 
-            p.Diameter = MEPTeeCalculator.GetDiameter(elemA, p.ElemType);
-            p.Width = MEPTeeCalculator.GetWidth(elemA, p.ElemType);
-            p.Height = MEPTeeCalculator.GetHeight(elemA, p.ElemType);
+            // ---------- 异径支持：立管/三通取大规格 ----------
+            p.Diameter = MEPTeeCalculator.GetMaxDiameter(elemA, elemB, p.ElemType);
+            p.Width = MEPTeeCalculator.GetMaxWidth(elemA, elemB, p.ElemType);
+            p.Height = MEPTeeCalculator.GetMaxHeight(elemA, elemB, p.ElemType);
 
             // T 形几何
             string geomErr;
@@ -264,7 +277,7 @@ namespace MEPTools.MEP3TeeConnect
             if (!MEPTeeCalculator.CheckEndDistance(elemA, crossPt, out endErr))
             { err = $"A 管：{endErr}"; return false; }
 
-            // 高差
+            // 高差（使用大管径，异径时更严格）
             string hErr;
             if (!MEPTeeCalculator.CheckHeightDifference(p.ZA, p.ZB, p.Diameter, out hErr))
             { err = hErr; return false; }
@@ -285,6 +298,14 @@ namespace MEPTools.MEP3TeeConnect
         // =====================================================================
         // 辅助
         // =====================================================================
+        private string FmtSize(double dia, double w, double h)
+        {
+            const double f = MEPTeeCalculator.FtToMm;
+            if (w > 1e-9 && h > 1e-9)
+                return $"{w * f:F0}x{h * f:F0}";
+            return $"Ø{dia * f:F0}";
+        }
+
         private void ShowDebugInfo(string title, string mainInstruction)
         {
             TaskDialog td = new TaskDialog(title);

@@ -37,7 +37,15 @@ namespace MEPTools.MEP3TeeConnect
         public double ZA { get; set; }
         public double ZB { get; set; }
 
-        /// <summary>规格</summary>
+        /// <summary>原始 A / B 规格（用于日志与提示）</summary>
+        public double DiameterA { get; set; }
+        public double DiameterB { get; set; }
+        public double WidthA { get; set; }
+        public double WidthB { get; set; }
+        public double HeightA { get; set; }
+        public double HeightB { get; set; }
+
+        /// <summary>立管/三通规格（取 A、B 中较大者，异径时即为大管径）</summary>
         public double Diameter { get; set; }
         public double Width { get; set; }
         public double Height { get; set; }
@@ -55,7 +63,6 @@ namespace MEPTools.MEP3TeeConnect
         public const double FittingCheckMm = 100.0;
         public const double DiameterGapMm = 100.0;
         public const double MinBLengthMm = 100.0;
-        private const double SizeTolMm = 1.0;
 
         public static TeeElementType GetTeeType(Element e)
         {
@@ -124,6 +131,18 @@ namespace MEPTools.MEP3TeeConnect
             }
             return GetDiameter(e, t);
         }
+
+        // ============================================================
+        // 异径支持：取 A、B 中较大规格
+        // ============================================================
+        public static double GetMaxDiameter(Element a, Element b, TeeElementType t)
+            => Math.Max(GetDiameter(a, t), GetDiameter(b, t));
+
+        public static double GetMaxWidth(Element a, Element b, TeeElementType t)
+            => Math.Max(GetWidth(a, t), GetWidth(b, t));
+
+        public static double GetMaxHeight(Element a, Element b, TeeElementType t)
+            => Math.Max(GetHeight(a, t), GetHeight(b, t));
 
         public static double GetCenterZ(Element e)
         {
@@ -240,33 +259,18 @@ namespace MEPTools.MEP3TeeConnect
             return true;
         }
 
-        /// <summary>等径校验</summary>
-        public static bool AreEqualSize(Element a, Element b, TeeElementType t, out string err)
-        {
-            err = null;
-            double tol = UnitUtils.ConvertToInternalUnits(SizeTolMm, UnitTypeId.Millimeters);
-            double da = GetDiameter(a, t), db = GetDiameter(b, t);
-            if (Math.Abs(da - db) > tol)
-            { err = $"管径/高度不一致：{da * FtToMm:F1}mm vs {db * FtToMm:F1}mm"; return false; }
-
-            if (t == TeeElementType.Duct)
-            {
-                double wa = GetWidth(a, t), wb = GetWidth(b, t);
-                if (Math.Abs(wa - wb) > tol)
-                { err = $"风管宽度不一致：{wa * FtToMm:F1}mm vs {wb * FtToMm:F1}mm"; return false; }
-            }
-            return true;
-        }
-
-        /// <summary>高差 ≥ 管径 + 100mm</summary>
-        public static bool CheckHeightDifference(double z1, double z2, double diameter, out string err)
+        /// <summary>
+        /// 高差校验：使用两管较大等效直径，需 ≥ maxDia + 100mm。
+        /// 异径时按大管径计算，保证大管穿越净空。
+        /// </summary>
+        public static bool CheckHeightDifference(double z1, double z2, double maxDiameter, out string err)
         {
             err = null;
             double diff = Math.Abs(z1 - z2);
-            double need = diameter + UnitUtils.ConvertToInternalUnits(DiameterGapMm, UnitTypeId.Millimeters);
+            double need = maxDiameter + UnitUtils.ConvertToInternalUnits(DiameterGapMm, UnitTypeId.Millimeters);
             if (diff < need)
             {
-                err = $"高差 {diff * FtToMm:F1}mm 不足（需 ≥ 管径 + {DiameterGapMm}mm = {need * FtToMm:F1}mm）";
+                err = $"高差 {diff * FtToMm:F1}mm 不足（需 ≥ 大管径 + {DiameterGapMm}mm = {need * FtToMm:F1}mm）";
                 return false;
             }
             return true;
