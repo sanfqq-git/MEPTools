@@ -1,0 +1,6 @@
+F:\0-Sanf\0-Src\MEPTools\bin\Debug\MEPTools.dll
+F:\0-Sanf\0-Src\MEPTools\bin\Debug\MEPTools.pdb
+F:\0-Sanf\0-Src\MEPTools\obj\Debug\MEPTools.csproj.AssemblyReference.cache
+F:\0-Sanf\0-Src\MEPTools\obj\Debug\MEPTools.csproj.CoreCompileInputs.cache
+F:\0-Sanf\0-Src\MEPTools\obj\Debug\MEPTools.dll
+F:\0-Sanf\0-Src\MEPTools\obj\Debug\MEPTools.pdb

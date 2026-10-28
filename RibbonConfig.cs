@@ -8,6 +8,9 @@ namespace MEPTools
     /// </summary>
     public class ButtonConfig
     {
+        // 新增：给按钮指定一个唯一且固定的英文ID
+        // 如果不填，App.cs 里会默认使用 CommandType.FullName
+        public string Id { get; set; } 
         public string Text { get; set; }
         public string ToolTip { get; set; }
         public Type CommandType { get; set; }
@@ -45,6 +48,7 @@ namespace MEPTools
                 new ButtonConfig { Text = "删除重复图元", ToolTip = "查找并删除当前视图中重复的 MEP 图元", CommandType = typeof(MEPTools.RemoveDuplicateElements.Command) },
                 new ButtonConfig { Text = "标高重命名", ToolTip = "批量重命名或规范化 Revit 标高名称", CommandType = typeof(MEPTools.RevitElevationRenamer.Command) },
                 new ButtonConfig { Text = "系统检查", ToolTip = "检查 MEP 系统的连通性及参数完整性", CommandType = typeof(MEPTools.SystemChecker.Command) },
+                new ButtonConfig { Text = "DUCT更新尺寸", ToolTip = "更新DUCT尺寸", CommandType = typeof(MEPTools.DuctResize.Command) },
             };
         }
     }

@@ -70,7 +70,7 @@ namespace MEPTools
 
         public Result OnShutdown(UIControlledApplication application) => Result.Succeeded;
 
-        // ================= 底层辅助方法 (保持不变) =================
+        // ================= 底层辅助方法 =================
 
         private string GetUniqueName(string baseName)
         {
@@ -91,7 +91,10 @@ namespace MEPTools
         private static void AddSubButton(PulldownButton pulldown, string asmPath, ButtonConfig config)
         {
             string fullClassName = config.CommandType.FullName;
-            string subName = $"{fullClassName}_{Guid.NewGuid().ToString("N").Substring(0, 6)}";
+            
+            // 【修改点】使用固定的 Id，如果没有配置 Id，则使用类名
+            string subName = string.IsNullOrEmpty(config.Id) ? fullClassName : config.Id; 
+            
             PushButtonData data = new PushButtonData(subName, config.Text, asmPath, fullClassName);
             PushButton btn = pulldown.AddPushButton(data);
             if (btn != null)
@@ -104,7 +107,10 @@ namespace MEPTools
         private static void AddPushButton(RibbonPanel panel, string asmPath, ButtonConfig config)
         {
             string fullClassName = config.CommandType.FullName;
-            string btnName = $"{fullClassName}_{Guid.NewGuid().ToString("N").Substring(0, 6)}";
+            
+            // 【修改点】使用固定的 Id，如果没有配置 Id，则使用类名
+            string btnName = string.IsNullOrEmpty(config.Id) ? fullClassName : config.Id; 
+            
             PushButtonData data = new PushButtonData(btnName, config.Text, asmPath, fullClassName);
             PushButton btn = panel.AddItem(data) as PushButton;
             if (btn != null)

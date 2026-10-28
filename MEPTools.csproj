@@ -40,12 +40,6 @@
       <Private>False</Private>
     </Reference>
 
-    <!-- 全局鼠标键盘钩子（SpaceKeyFinisher / KeyboardShortcutHelper 使用） -->
-    <Reference Include="Gma.System.MouseKeyHook">
-      <HintPath>C:\ProgramData\Autodesk\Revit\Addins\2022\Gma.System.MouseKeyHook.dll</HintPath>
-      <Private>False</Private>
-    </Reference>
-
     <!-- .NET 基础引用 -->
     <Reference Include="System" />
     <Reference Include="System.Core" />
