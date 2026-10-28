@@ -9,69 +9,38 @@ using MEPTools.Shared;
 
 namespace MEPTools.MEPTagAlignLeft
 {
-    [Transaction(TransactionMode.Manual)]
-    [Regeneration(RegenerationOption.Manual)]
-    public class Command : IExternalCommand
+    /// <summary>
+    /// 命令公共辅助类：处理视图检查、Tag 获取、配置读取、事务执行等。
+    /// </summary>
+    internal static class CommandHelper
     {
-        public Result Execute(ExternalCommandData commandData,
-                              ref string message,
-                              ElementSet elements)
+        public static bool CheckView(View view)
         {
-            UIDocument uidoc = commandData.Application.ActiveUIDocument;
-            if (uidoc == null) return Result.Cancelled;
-
-            Document doc = uidoc.Document;
-            View activeView = doc.ActiveView;
-
-            // 1. 检查视图类型
-            if (activeView == null || !IsSupportedView(activeView))
+            if (view == null || !IsSupportedView(view))
             {
                 TaskDialog.Show("提示",
                     "请在二维视图（平面、结构平面、天花板平面、立面、剖面、详图等）中运行此命令。");
-                return Result.Cancelled;
+                return false;
             }
+            return true;
+        }
 
-            // 2. 获取选中的标记
-            List<IndependentTag> tags = Preselected.GetSelectedIndependentTags(uidoc, activeView);
+        public static List<IndependentTag> GetTags(UIDocument uidoc, View view)
+        {
+            List<IndependentTag> tags = Preselected.GetSelectedIndependentTags(uidoc, view);
             if (tags.Count < 2)
             {
                 TaskDialog.Show("提示", "请先选中至少两个标记（Tag），再运行命令。");
-                return Result.Cancelled;
+                return null;
             }
-
-            // 3. 从配置文件读取行距（Revit 内部单位：英尺）
-            double rowSpacing = GetRowSpacingFromConfig();
-
-            // 4. 计算移动向量
-            Dictionary<ElementId, XYZ> moveVectors =
-                CalculateIndependentTag.CalculateStackedLeftMoves(
-                    doc, activeView, tags, rowSpacing);
-
-            if (moveVectors == null || moveVectors.Count == 0)
-            {
-                TaskDialog.Show("提示", "所有标记均已对齐，或无法计算边界框。");
-                return Result.Cancelled;
-            }
-
-            // 5. 执行移动
-            using (Transaction trans = new Transaction(doc, "左对齐并堆叠标记"))
-            {
-                trans.Start();
-                foreach (KeyValuePair<ElementId, XYZ> kvp in moveVectors)
-                {
-                    ElementTransformUtils.MoveElement(doc, kvp.Key, kvp.Value);
-                }
-                trans.Commit();
-            }
-
-            return Result.Succeeded;
+            return tags;
         }
 
         /// <summary>
         /// 从 DLL 同级目录下的 TagAlignLeft.config 读取行距。
         /// 逐行解析，支持 // 注释。
         /// </summary>
-        private static double GetRowSpacingFromConfig()
+        public static double GetRowSpacingFromConfig()
         {
             double defaultSpacing = 0.50;
             try
@@ -82,17 +51,13 @@ namespace MEPTools.MEPTagAlignLeft
 
                 if (File.Exists(configPath))
                 {
-                    // 逐行读取文件
                     string[] lines = File.ReadAllLines(configPath);
                     foreach (string line in lines)
                     {
                         string trimmedLine = line.Trim();
-
-                        // 跳过空行和注释行
                         if (string.IsNullOrEmpty(trimmedLine) || trimmedLine.StartsWith("//"))
                             continue;
 
-                        // 尝试解析第一个找到的有效数字
                         if (double.TryParse(trimmedLine, out double spacing) && spacing > 0)
                         {
                             return spacing;
@@ -101,7 +66,6 @@ namespace MEPTools.MEPTagAlignLeft
                 }
                 else
                 {
-                    // 如果文件不存在，自动生成默认配置
                     File.WriteAllText(configPath, 
                         "0.50\r\n\r\n" +
                         "// 此处修改 Tag 堆叠行距 (Revit内部单位：英尺)\r\n" +
@@ -111,15 +75,34 @@ namespace MEPTools.MEPTagAlignLeft
             }
             catch
             {
-                // 如果读写文件发生异常，回退到默认值
+                // 异常时回退到默认值
             }
 
             return defaultSpacing;
         }
 
         /// <summary>
-        /// 判断是否为可用于"左对齐 + 堆叠"的二维视图。
+        /// 执行移动向量（包含事务包装）。
         /// </summary>
+        public static void ExecuteMoves(Document doc, string transactionName, Dictionary<ElementId, XYZ> moveVectors)
+        {
+            if (moveVectors == null || moveVectors.Count == 0)
+            {
+                TaskDialog.Show("提示", "所有标记均已处于目标状态，无需移动。");
+                return;
+            }
+
+            using (Transaction trans = new Transaction(doc, transactionName))
+            {
+                trans.Start();
+                foreach (KeyValuePair<ElementId, XYZ> kvp in moveVectors)
+                {
+                    ElementTransformUtils.MoveElement(doc, kvp.Key, kvp.Value);
+                }
+                trans.Commit();
+            }
+        }
+
         private static bool IsSupportedView(View view)
         {
             switch (view.ViewType)
@@ -135,6 +118,92 @@ namespace MEPTools.MEPTagAlignLeft
                 default:
                     return false;
             }
+        }
+    }
+
+    /// <summary>
+    /// 默认命令：左对齐 + 堆叠
+    /// </summary>
+    [Transaction(TransactionMode.Manual)]
+    [Regeneration(RegenerationOption.Manual)]
+    public class Command : IExternalCommand
+    {
+        public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
+        {
+            UIDocument uidoc = commandData.Application.ActiveUIDocument;
+            if (uidoc == null) return Result.Cancelled;
+
+            Document doc = uidoc.Document;
+            View activeView = doc.ActiveView;
+
+            if (!CommandHelper.CheckView(activeView)) return Result.Cancelled;
+
+            List<IndependentTag> tags = CommandHelper.GetTags(uidoc, activeView);
+            if (tags == null) return Result.Cancelled;
+
+            double rowSpacing = CommandHelper.GetRowSpacingFromConfig();
+            var moveVectors = CalculateIndependentTag.CalculateStackedLeftMoves(activeView, tags, rowSpacing);
+            
+            CommandHelper.ExecuteMoves(doc, "左对齐并堆叠标记", moveVectors);
+
+            return Result.Succeeded;
+        }
+    }
+
+    /// <summary>
+    /// 仅左对齐命令
+    /// </summary>
+    [Transaction(TransactionMode.Manual)]
+    [Regeneration(RegenerationOption.Manual)]
+    public class CommandAlignLeftOnly : IExternalCommand
+    {
+        public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
+        {
+            UIDocument uidoc = commandData.Application.ActiveUIDocument;
+            if (uidoc == null) return Result.Cancelled;
+
+            Document doc = uidoc.Document;
+            View activeView = doc.ActiveView;
+
+            if (!CommandHelper.CheckView(activeView)) return Result.Cancelled;
+
+            List<IndependentTag> tags = CommandHelper.GetTags(uidoc, activeView);
+            if (tags == null) return Result.Cancelled;
+
+            var moveVectors = CalculateIndependentTag.CalculateLeftAlignMoves(activeView, tags);
+            
+            CommandHelper.ExecuteMoves(doc, "左对齐标记", moveVectors);
+
+            return Result.Succeeded;
+        }
+    }
+
+    /// <summary>
+    /// 仅堆叠命令
+    /// </summary>
+    [Transaction(TransactionMode.Manual)]
+    [Regeneration(RegenerationOption.Manual)]
+    public class CommandStackOnly : IExternalCommand
+    {
+        public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
+        {
+            UIDocument uidoc = commandData.Application.ActiveUIDocument;
+            if (uidoc == null) return Result.Cancelled;
+
+            Document doc = uidoc.Document;
+            View activeView = doc.ActiveView;
+
+            if (!CommandHelper.CheckView(activeView)) return Result.Cancelled;
+
+            List<IndependentTag> tags = CommandHelper.GetTags(uidoc, activeView);
+            if (tags == null) return Result.Cancelled;
+
+            double rowSpacing = CommandHelper.GetRowSpacingFromConfig();
+            var moveVectors = CalculateIndependentTag.CalculateStackMoves(activeView, tags, rowSpacing);
+            
+            CommandHelper.ExecuteMoves(doc, "堆叠标记", moveVectors);
+
+            return Result.Succeeded;
         }
     }
 }

@@ -6,8 +6,8 @@ using Autodesk.Revit.DB;
 namespace MEPTools.MEPTagAlignLeft
 {
     /// <summary>
-    /// 计算类：基于 TagHeadPosition 计算"左对齐 + 按管序从上往下堆叠"的移动向量。
-    /// 不依赖 BoundingBox，避免引线导致的结果漂移，保证多次运行幂等。
+    /// 计算类：基于 TagHeadPosition 计算左对齐、堆叠的移动向量。
+    /// 完全不依赖 Host 元素位置，保证多次运行严格幂等。
     /// </summary>
     public static class CalculateIndependentTag
     {
@@ -16,68 +16,108 @@ namespace MEPTools.MEPTagAlignLeft
         private class TagInfo
         {
             public IndependentTag Tag;
-            public XYZ HostPos;   // 宿主元素中心（模型坐标），仅用于排序
-            public XYZ HeadPos;   // Tag 头插入点（TagHeadPosition），用于定位
+            public XYZ HeadPos;   // Tag 头插入点（TagHeadPosition），用于定位和排序
         }
 
         /// <summary>
-        /// 左对齐 + 按管道顺序从上往下垂直堆叠。
+        /// 统一的初始化逻辑：提取 Tag 信息并获取视图的右/上方向。
+        /// </summary>
+        private static List<TagInfo> PrepareTagInfos(
+            View view, IList<IndependentTag> tags, out XYZ rightDir, out XYZ upDir)
+        {
+            rightDir = null;
+            upDir = null;
+
+            if (view == null || tags == null || tags.Count < 2)
+                return null;
+
+            rightDir = view.RightDirection?.Normalize();
+            upDir = view.UpDirection?.Normalize();
+
+            if (rightDir == null || upDir == null || 
+                rightDir.GetLength() < Eps || upDir.GetLength() < Eps)
+            {
+                return null;
+            }
+
+            return tags.Select(t => new TagInfo
+            {
+                Tag = t,
+                HeadPos = t.TagHeadPosition
+            }).ToList();
+        }
+
+        /// <summary>
+        /// 仅左对齐：将所有 Tag 的 HeadPos 对齐到最左侧，不改变垂直位置。
+        /// </summary>
+        public static Dictionary<ElementId, XYZ> CalculateLeftAlignMoves(
+            View view, IList<IndependentTag> tags)
+        {
+            var moves = new Dictionary<ElementId, XYZ>();
+            var infos = PrepareTagInfos(view, tags, out XYZ rightDir, out _);
+            if (infos == null) return moves;
+
+            double leftMostR = infos.Min(i => i.HeadPos.DotProduct(rightDir));
+
+            foreach (var info in infos)
+            {
+                double curR = info.HeadPos.DotProduct(rightDir);
+                double dR = leftMostR - curR;
+
+                if (Math.Abs(dR) > Eps)
+                {
+                    moves[info.Tag.Id] = rightDir * dR;
+                }
+            }
+
+            return moves;
+        }
+
+        /// <summary>
+        /// 仅堆叠：保持 Tag 现有的垂直相对顺序，将其按 rowSpacing 统一排列。
+        /// </summary>
+        public static Dictionary<ElementId, XYZ> CalculateStackMoves(
+            View view, IList<IndependentTag> tags, double rowSpacing)
+        {
+            var moves = new Dictionary<ElementId, XYZ>();
+            var infos = PrepareTagInfos(view, tags, out _, out XYZ upDir);
+            if (infos == null) return moves;
+
+            // 按当前 HeadPos 的 upDir 投影从上到下排序
+            infos.Sort((a, b) =>
+                b.HeadPos.DotProduct(upDir).CompareTo(a.HeadPos.DotProduct(upDir)));
+
+            double anchorU = infos[0].HeadPos.DotProduct(upDir);
+
+            for (int i = 0; i < infos.Count; i++)
+            {
+                double curU = infos[i].HeadPos.DotProduct(upDir);
+                double dU = (anchorU - i * rowSpacing) - curU;
+
+                if (Math.Abs(dU) > Eps)
+                {
+                    moves[infos[i].Tag.Id] = upDir * dU;
+                }
+            }
+
+            return moves;
+        }
+
+        /// <summary>
+        /// 左对齐 + 按现有垂直顺序从上往下垂直堆叠。
         /// rowSpacing 表示相邻两行 Tag 头在 upDir 方向上的距离（模型单位）。
-        /// 返回：Tag 的 ElementId -> 移动向量（模型坐标）。
         /// </summary>
         public static Dictionary<ElementId, XYZ> CalculateStackedLeftMoves(
-            Document doc, View view, IList<IndependentTag> tags, double rowSpacing)
+            View view, IList<IndependentTag> tags, double rowSpacing)
         {
-            Dictionary<ElementId, XYZ> moves = new Dictionary<ElementId, XYZ>();
-            if (doc == null || view == null || tags == null || tags.Count < 2)
-                return moves;
+            var moves = new Dictionary<ElementId, XYZ>();
+            var infos = PrepareTagInfos(view, tags, out XYZ rightDir, out XYZ upDir);
+            if (infos == null) return moves;
 
-            // 视图的右 / 上方向（正交单位向量）
-            XYZ rightDir = view.RightDirection;
-            XYZ upDir = view.UpDirection;
-            if (rightDir == null || upDir == null) return moves;
-            if (rightDir.GetLength() < Eps || upDir.GetLength() < Eps) return moves;
-            rightDir = rightDir.Normalize();
-            upDir = upDir.Normalize();
+            // 按当前 HeadPos 的 upDir 投影从上到下排序
+            infos.Sort((a, b) =>
+                b.HeadPos.DotProduct(upDir).CompareTo(a.HeadPos.DotProduct(upDir)));
 
-            // 1) 收集每个 Tag 的宿主位置与头位置
-            List<TagInfo> infos = new List<TagInfo>();
-            foreach (IndependentTag tag in tags)
-            {
-                infos.Add(new TagInfo
-                {
-                    Tag = tag,
-                    HostPos = GetHostPosition(doc, tag, view),
-                    HeadPos = tag.TagHeadPosition
-                });
-            }
-
-            if (infos.Count < 2) return moves;
-
-            // 2) 判断管道布局：从左到右 还是 从上到下（用 Host 位置判断，与移动无关）
-            double xRange = infos.Max(i => i.HostPos.DotProduct(rightDir))
-                          - infos.Min(i => i.HostPos.DotProduct(rightDir));
-            double yRange = infos.Max(i => i.HostPos.DotProduct(upDir))
-                          - infos.Min(i => i.HostPos.DotProduct(upDir));
-
-            if (xRange >= yRange)
-            {
-                // 横向排列 → 从左到右
-                infos.Sort((a, b) =>
-                    a.HostPos.DotProduct(rightDir)
-                        .CompareTo(b.HostPos.DotProduct(rightDir)));
-            }
-            else
-            {
-                // 纵向排列 → 从上到下
-                infos.Sort((a, b) =>
-                    b.HostPos.DotProduct(upDir)
-                        .CompareTo(a.HostPos.DotProduct(upDir)));
-            }
-
-            // 3) 计算目标位置（完全基于 TagHeadPosition）
-            //    水平：对齐到所有 HeadPos 中最靠左（rightDir 投影最小）的那个
-            //    垂直：排序后第 0 个 HeadPos 的 upDir 投影作为起点，依次向下排列
             double leftMostR = infos.Min(i => i.HeadPos.DotProduct(rightDir));
             double anchorU = infos[0].HeadPos.DotProduct(upDir);
 
@@ -99,40 +139,6 @@ namespace MEPTools.MEPTagAlignLeft
             }
 
             return moves;
-        }
-
-        /// <summary>
-        /// 取 Tag 所标注宿主的中心点（模型坐标）。
-        /// 仅用于排序，Host 本身不移动，因此该值在多次运行之间稳定。
-        /// </summary>
-        private static XYZ GetHostPosition(Document doc, IndependentTag tag, View view)
-        {
-            try
-            {
-                ICollection<Element> taggedElems = tag.GetTaggedLocalElements();
-                if (taggedElems != null && taggedElems.Count > 0)
-                {
-                    Element host = taggedElems.First();
-                    if (host != null)
-                    {
-                        Location loc = host.Location;
-                        if (loc is LocationPoint lp)
-                            return lp.Point;
-                        if (loc is LocationCurve lc && lc.Curve != null)
-                            return lc.Curve.Evaluate(0.5, true);
-
-                        BoundingBoxXYZ bb = host.get_BoundingBox(view);
-                        if (bb != null)
-                            return bb.Transform.OfPoint((bb.Min + bb.Max) * 0.5);
-                    }
-                }
-            }
-            catch
-            {
-                // 忽略异常，回退到 TagHeadPosition
-            }
-
-            return tag.TagHeadPosition;
         }
     }
 }

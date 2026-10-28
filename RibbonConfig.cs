@@ -41,7 +41,13 @@ namespace MEPTools
                 // ================= 3. 对齐与排序 (面板直接展示) =================
                 new ButtonConfig { Text = "底部平齐", ToolTip = "将选中的 MEP 元素底部标高对齐到指定的基准", CommandType = typeof(MEPTools.MEPAlignBottomElevation.Command) },
                 new ButtonConfig { Text = "分组排序对齐", ToolTip = "按底部标高分组，组内按净间距自动排布", CommandType = typeof(MEPTools.MEPGroupSortAlign.Command) },
-                new ButtonConfig { Text = "标记左对齐", ToolTip = "将选中的标记（Tag）统一左对齐到 MEP 元素", CommandType = typeof(MEPTools.MEPTagAlignLeft.Command) },
+                
+                // --- 标记对齐与堆叠（拆分为三个独立按钮） ---
+                new ButtonConfig { Text = "标记左对齐并堆叠", ToolTip = "将选中的标记（Tag）统一左对齐，并按当前上下顺序调整间距堆叠", CommandType = typeof(MEPTools.MEPTagAlignLeft.Command) },
+                new ButtonConfig { Text = "标记仅左对齐", ToolTip = "仅将选中的标记（Tag）左侧对齐，不改变其垂直位置", CommandType = typeof(MEPTools.MEPTagAlignLeft.CommandAlignLeftOnly) },
+                new ButtonConfig { Text = "标记仅堆叠", ToolTip = "保持选中的标记（Tag）现有相对顺序，统一调整上下堆叠间距", CommandType = typeof(MEPTools.MEPTagAlignLeft.CommandStackOnly) },
+                
+                new ButtonConfig { Text = "MEPTag60°90°", ToolTip = "将选中的标记（Tag）修改标记引线为90度折线", CommandType = typeof(MEPTools.TagLeaderStyle.Command) },
 
                 // ================= 4. 其他辅助工具 (面板直接展示) =================
                 new ButtonConfig { Text = "链接墙洞", ToolTip = "在链接模型（如建筑墙）上批量创建墙洞", CommandType = typeof(MEPTools.LinkElementWallHole.Command) },
