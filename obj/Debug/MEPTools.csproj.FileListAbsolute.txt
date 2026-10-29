@@ -1,2 +1,0 @@
-F:\0-Sanf\0-Src\MEPTools\obj\Debug\MEPTools.csproj.AssemblyReference.cache
-F:\0-Sanf\0-Src\MEPTools\obj\Debug\MEPTools.csproj.CoreCompileInputs.cache

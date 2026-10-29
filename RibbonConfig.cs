@@ -8,8 +8,6 @@ namespace MEPTools
     /// </summary>
     public class ButtonConfig
     {
-        // 新增：给按钮指定一个唯一且固定的英文ID
-        // 如果不填，App.cs 里会默认使用 CommandType.FullName
         public string Id { get; set; } 
         public string Text { get; set; }
         public string ToolTip { get; set; }
@@ -30,7 +28,10 @@ namespace MEPTools
                 new ButtonConfig { Text = "高差三通连接", ToolTip = "有高差的两组MEP 元素，生成高差三通", CommandType = typeof(MEPTools.MEP3TeeConnect.Command), PulldownGroup = "连接工具" },
                 new ButtonConfig { Text = "高差相交双三通连接", ToolTip = "高差相交的两组MEP 元素，生成双三通", CommandType = typeof(MEPTools.MEP3TeeCrossConnect.Command), PulldownGroup = "连接工具" },
                 new ButtonConfig { Text = "高低连接", ToolTip = "有高差的两组MEP 元素，设角度生成连接", CommandType = typeof(MEPTools.MEPHighLowConnector.Command), PulldownGroup = "连接工具" },
-                new ButtonConfig { Text = "平面连接", ToolTip = "水平连接两组MEP元素，可设角度拐弯可0°直接", CommandType = typeof(MEPTools.MEPPlanarConnector.Command), PulldownGroup = "连接工具" },
+                
+                // 【修改点】拆分为共线与转角两个命令
+                new ButtonConfig { Text = "平面共线连接", ToolTip = "同轴的两组MEP元素，直接延长并合并", CommandType = typeof(MEPTools.MEPPlanarConnector.Commands.CollinearCommand), PulldownGroup = "连接工具" },
+                new ButtonConfig { Text = "平面转角连接", ToolTip = "不平行但有交点的两组MEP元素，延长并生成弯头", CommandType = typeof(MEPTools.MEPPlanarConnector.Commands.CornerCommand), PulldownGroup = "连接工具" },
 
                 // ================= 2. 翻弯工具 (下拉菜单) =================
                 new ButtonConfig { Text = "高低翻弯", ToolTip = "高低差生成马鞍翻弯", CommandType = typeof(MEPTools.MEPHighLowSaddleBend.Command), PulldownGroup = "翻弯工具" },
