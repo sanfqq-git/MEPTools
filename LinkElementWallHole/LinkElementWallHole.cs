@@ -14,7 +14,7 @@ using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
 
-using MEPTools.Shared;   // SpaceKeyFinisher
+using MEPTools.Shared;   // SpaceKeyFinisher, MEPLogger
 
 namespace MEPTools.LinkElementWallHole
 {
@@ -27,8 +27,8 @@ namespace MEPTools.LinkElementWallHole
         private string LEVEL_NAME;
         private double CABLE_TRAY_EXTRA_HEIGHT_MM;
 
-        // 无墙分支：MEP 包围盒中心距洞 bbox（扩大后）多远仍算相关
-        private const double SEARCH_TOLERANCE_MM = 1500.0;
+        // 匹配容差（毫米）：只要包围盒在 300mm 内有交集即视为关联
+        private const double MATCH_TOLERANCE_MM = 300.0;
 
         public Result Execute(
             ExternalCommandData commandData,
@@ -39,127 +39,150 @@ namespace MEPTools.LinkElementWallHole
             UIDocument uidoc = uiapp.ActiveUIDocument;
             Document doc = uidoc.Document;
 
+            MEPLogger.Instance.StartSession("链接墙洞创建/更新");
+
             try
             {
                 LoadConfig();
 
                 // ==========================================================
-                // 第 1 次选择：链接里的墙（可选，最多 1 面）+ MEP（必选）
+                // 阶段 0：检查预选择，决定分支
                 // ==========================================================
-                IList<Reference> selectedRefs;
-                using (var finisher = new SpaceKeyFinisher())
+                IList<Element> preSelectedHoles = GetPreSelectedHoles(uidoc);
+
+                if (preSelectedHoles.Count > 0)
                 {
-                    finisher.Enable();
-                    selectedRefs = uidoc.Selection.PickObjects(
-                        ObjectType.LinkedElement,
-                        new AnyLinkElementFilter(),
-                        "步骤 1 / 2：\n" +
-                        "  【创建新洞】选 1 面墙 + 1~N 个 MEP，按空格结束\n" +
-                        "  【更新已有洞】只选 MEP（不选墙），按空格结束\n" +
-                        "  （不选墙时会进入步骤 2 让您选择要更新的墙洞）");
-                }
+                    // ------------------------------------------------------
+                    // 分支 B：有预选孔 → 进入更新流程
+                    // ------------------------------------------------------
+                    MEPLogger.Instance.AppendLine($"[Command] 发现预选了 {preSelectedHoles.Count} 个墙洞，进入更新流程。");
 
-                if (selectedRefs == null || selectedRefs.Count == 0)
-                    throw new Exception("未选择任何元素。");
-
-                List<Reference> wallRefs = new List<Reference>();
-                List<Reference> pipeRefs = new List<Reference>();
-
-                foreach (Reference r in selectedRefs)
-                {
-                    RevitLinkInstance linkInst = doc.GetElement(r.ElementId) as RevitLinkInstance;
-                    if (linkInst == null) continue;
-                    Document linkDoc = linkInst.GetLinkDocument();
-                    if (linkDoc == null) continue;
-                    Element linkedElem = linkDoc.GetElement(r.LinkedElementId);
-                    if (linkedElem == null) continue;
-
-                    if (linkedElem is Wall)
-                        wallRefs.Add(r);
-                    else if (linkedElem is Duct || linkedElem is Pipe || linkedElem is CableTray)
-                        pipeRefs.Add(r);
-                }
-
-                if (pipeRefs.Count == 0)
-                    throw new Exception("未选中任何管道/桥架/风管。");
-                if (wallRefs.Count > 1)
-                    throw new Exception("墙最多只能选一面。");
-
-                // 构建 pipeElements（两条分支共用）
-                RevitLinkInstance pipeLinkInstance = null;
-                Document pipeLinkDoc = null;
-                List<Element> pipeElements = new List<Element>();
-
-                foreach (Reference pref in pipeRefs)
-                {
-                    RevitLinkInstance inst = doc.GetElement(pref.ElementId) as RevitLinkInstance;
-                    if (pipeLinkInstance == null)
+                    IList<Reference> pipeRefs = null;
+                    try
                     {
-                        pipeLinkInstance = inst;
-                        pipeLinkDoc = inst.GetLinkDocument();
+                        using (var finisher = new SpaceKeyFinisher())
+                        {
+                            finisher.Enable();
+                            // 严格限制：只能选择链接里的 MEP
+                            pipeRefs = uidoc.Selection.PickObjects(
+                                ObjectType.LinkedElement,
+                                new LinkMEPSelectionFilter(doc),
+                                $"已识别预选的 {preSelectedHoles.Count} 个墙洞。\n" +
+                                "请框选/点选要关联的 MEP（仅限链接中的管道/风管/桥架）\n" +
+                                "按空格结束");
+                        }
                     }
-                    else if (pipeLinkInstance.Id != inst.Id)
+                    catch (OperationCanceledException)
                     {
-                        throw new Exception("所有管线必须来自同一个链接");
+                        throw new Exception("未选择任何 MEP，无法更新。");
                     }
-                    Element e = pipeLinkDoc?.GetElement(pref.LinkedElementId);
-                    if (e != null) pipeElements.Add(e);
+
+                    if (!ParsePipeReferences(doc, pipeRefs, out _, out var pipeElements, out var pipeTf))
+                        throw new Exception("未选中任何有效的管道/桥架/风管，或它们不在同一个链接中。");
+
+                    // 提取 ElementIds 供后续使用
+                    var holeRefs = preSelectedHoles.Select(h => new Reference(h)).ToList();
+                    return UpdateExistingHoles(doc, holeRefs, pipeElements, pipeTf);
                 }
-
-                if (pipeElements.Count == 0)
-                    throw new Exception("无法从链接中读取 MEP 元素。");
-
-                Transform pipeTf = pipeLinkInstance.GetTotalTransform();
-
-                // ==========================================================
-                // 分支 A：选了墙 → 创建新洞
-                // ==========================================================
-                if (wallRefs.Count == 1)
+                else
                 {
-                    return CreateNewHole(doc, wallRefs[0], pipeElements, pipeTf);
+                    // ------------------------------------------------------
+                    // 分支 A：无预选孔 → 进入新建流程（分两步）
+                    // ------------------------------------------------------
+                    MEPLogger.Instance.AppendLine("[Command] 未预选墙洞，进入新建流程。");
+
+                    // 步骤 1：选择 Linked MEP
+                    IList<Reference> pipeRefs = null;
+                    try
+                    {
+                        using (var finisher = new SpaceKeyFinisher())
+                        {
+                            finisher.Enable();
+                            pipeRefs = uidoc.Selection.PickObjects(
+                                ObjectType.LinkedElement,
+                                new LinkMEPSelectionFilter(doc),
+                                "【新建洞 - 步骤 1 / 2】\n" +
+                                "请选择 1~N 个需要开洞的 MEP（仅限链接中的管道/风管/桥架）\n" +
+                                "按空格结束");
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw new Exception("未选择任何 MEP，操作取消。");
+                    }
+
+                    if (!ParsePipeReferences(doc, pipeRefs, out _, out var pipeElements, out var pipeTf))
+                        throw new Exception("未选中任何有效的管道/桥架/风管，或它们不在同一个链接中。");
+
+                    // 步骤 2：选择 Linked 墙
+                    Reference wallRef = null;
+                    try
+                    {
+                        using (var finisher = new SpaceKeyFinisher())
+                        {
+                            finisher.Enable();
+                            wallRef = uidoc.Selection.PickObject(
+                                ObjectType.LinkedElement,
+                                new LinkWallSelectionFilter(doc),
+                                "【新建洞 - 步骤 2 / 2】\n" +
+                                "请选择 1 面需要开洞的链接墙");
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw new Exception("未选择墙，操作取消。");
+                    }
+
+                    return CreateNewHole(doc, wallRef, pipeElements, pipeTf);
                 }
-
-                // ==========================================================
-                // 分支 B：没选墙 → 第 2 次选择 WallHole，然后更新
-                // ==========================================================
-                IList<Reference> holeRefs;
-                using (var finisher = new SpaceKeyFinisher())
-                {
-                    finisher.Enable();
-                    holeRefs = uidoc.Selection.PickObjects(
-                        ObjectType.Element,
-                        new WallHoleFilter(FAMILY_NAME),
-                        $"步骤 2 / 2（未选墙）：\n" +
-                        $"请选择要更新的墙洞（族名 = \"{FAMILY_NAME}\"，Generic Models 类别）\n" +
-                        $"可多选，按空格键结束。\n" +
-                        $"（若看不到墙洞，请切换到三维视图或临时打开 Generic Models 可见性）");
-                }
-
-                if (holeRefs == null || holeRefs.Count == 0)
-                    throw new Exception(
-                        $"未选择任何墙洞，无法更新。\n" +
-                        $"如需创建新墙洞，请重新运行并选择 1 面墙 + MEP。");
-
-                return UpdateExistingHoles(doc, holeRefs, pipeElements, pipeTf);
             }
             catch (OperationCanceledException)
             {
+                MEPLogger.Instance.AppendLine("[Command] 用户取消了操作。");
                 return Result.Cancelled;
             }
             catch (Exception ex)
             {
+                MEPLogger.Instance.LogException("Command.Execute", ex);
                 message = ex.Message;
                 return Result.Failed;
+            }
+            finally
+            {
+                MEPLogger.Instance.EndSession("命令结束");
             }
         }
 
         // ==========================================================
-        // 分支 A：创建新洞（原有逻辑抽出来）
+        // 辅助逻辑：获取预选的墙洞
+        // ==========================================================
+        private IList<Element> GetPreSelectedHoles(UIDocument uidoc)
+        {
+            List<Element> holes = new List<Element>();
+            Document doc = uidoc.Document;
+            ICollection<ElementId> selectedIds = uidoc.Selection.GetElementIds();
+
+            foreach (ElementId id in selectedIds)
+            {
+                Element elem = doc.GetElement(id);
+                if (elem is FamilyInstance fi &&
+                    fi.Symbol?.Family?.Name == FAMILY_NAME &&
+                    fi.Category?.Id.IntegerValue == (int)BuiltInCategory.OST_GenericModel)
+                {
+                    holes.Add(fi);
+                }
+            }
+            return holes;
+        }
+
+        // ==========================================================
+        // 分支 A：创建新洞
         // ==========================================================
         private Result CreateNewHole(
             Document doc, Reference wallRef,
             List<Element> pipeElements, Transform pipeTf)
         {
+            MEPLogger.Instance.AppendLine("[CreateNewHole] 开始创建新洞。");
             RevitLinkInstance wallLinkInstance = doc.GetElement(wallRef.ElementId) as RevitLinkInstance;
             Document wallLinkDoc = wallLinkInstance.GetLinkDocument();
             Wall targetWall = wallLinkDoc.GetElement(wallRef.LinkedElementId) as Wall;
@@ -176,12 +199,17 @@ namespace MEPTools.LinkElementWallHole
             XYZ wallNormal = new XYZ(wallDir.Y, -wallDir.X, 0).Normalize();
 
             List<XYZ> allPoints = new List<XYZ>();
+            
             foreach (Element elem in pipeElements)
             {
                 BoundingBoxXYZ bbox = elem.get_BoundingBox(null);
                 if (bbox == null) continue;
-                allPoints.Add(pipeTf.OfPoint(bbox.Min));
-                allPoints.Add(pipeTf.OfPoint(bbox.Max));
+                
+                Outline worldOutline = GetWorldOutline(bbox, pipeTf);
+                if (worldOutline == null) continue;
+
+                allPoints.Add(worldOutline.MinimumPoint);
+                allPoints.Add(worldOutline.MaximumPoint);
             }
 
             double minU = double.MaxValue, maxU = double.MinValue;
@@ -242,6 +270,7 @@ namespace MEPTools.LinkElementWallHole
                 tran.Commit();
             }
 
+            MEPLogger.Instance.AppendLine("[CreateNewHole] 创建成功。");
             return Result.Succeeded;
         }
 
@@ -254,6 +283,19 @@ namespace MEPTools.LinkElementWallHole
             List<Element> pipeElements,
             Transform pipeTf)
         {
+            MEPLogger.Instance.AppendLine("[UpdateExistingHoles] 开始更新墙洞。");
+
+            Dictionary<Element, Outline> pipeOutlines = new Dictionary<Element, Outline>();
+            foreach (var pipe in pipeElements)
+            {
+                BoundingBoxXYZ pb = pipe.get_BoundingBox(null);
+                if (pb != null)
+                {
+                    Outline outline = GetWorldOutline(pb, pipeTf);
+                    if (outline != null) pipeOutlines.Add(pipe, outline);
+                }
+            }
+
             using (Transaction tran = new Transaction(doc, "根据MEP更新墙洞"))
             {
                 tran.Start();
@@ -274,15 +316,26 @@ namespace MEPTools.LinkElementWallHole
                     LocationPoint lp = hole.Location as LocationPoint;
                     if (lp == null) continue;
 
-                    // 1) 匹配与这个洞相邻的 MEP
-                    List<Element> relatedPipes = MatchPipesToHole(hole, pipeElements, pipeTf);
+                    List<Element> relatedPipes;
+                    if (holeRefs.Count == 1)
+                    {
+                        // 【兜底逻辑】只选了 1 个洞，无视空间相交判断，强绑所有选中的 MEP
+                        relatedPipes = pipeElements;
+                        MEPLogger.Instance.AppendLine($"[Update] 仅选中 1 个洞，强制将所有 {pipeElements.Count} 个 MEP 绑定到此洞。");
+                    }
+                    else
+                    {
+                        // 如果选了多个洞，通过空间相交分配归属
+                        relatedPipes = MatchPipesToHole(hole, pipeOutlines);
+                    }
+
                     if (relatedPipes.Count == 0)
                     {
                         skippedNoMatch++;
+                        MEPLogger.Instance.AppendLine($"[Update] 洞 {hole.Id} 未匹配到任何 MEP，跳过。");
                         continue;
                     }
 
-                    // 2) 计算尺寸
                     XYZ holePos = lp.Point;
                     XYZ wallDir = hole.HandOrientation.Normalize();
                     XYZ wallOrigin = new XYZ(holePos.X, holePos.Y, 0);
@@ -293,24 +346,22 @@ namespace MEPTools.LinkElementWallHole
 
                     foreach (var pipe in relatedPipes)
                     {
-                        BoundingBoxXYZ bbox = pipe.get_BoundingBox(null);
-                        if (bbox == null) continue;
+                        if (!pipeOutlines.TryGetValue(pipe, out Outline outline)) continue;
 
                         for (int i = 0; i <= 1; i++)
                         for (int j = 0; j <= 1; j++)
                         for (int k = 0; k <= 1; k++)
                         {
                             XYZ lp3 = new XYZ(
-                                i == 0 ? bbox.Min.X : bbox.Max.X,
-                                j == 0 ? bbox.Min.Y : bbox.Max.Y,
-                                k == 0 ? bbox.Min.Z : bbox.Max.Z);
-                            XYZ wp = pipeTf.OfPoint(lp3);
-
-                            double u = (wp - wallOrigin).DotProduct(wallDir);
+                                i == 0 ? outline.MinimumPoint.X : outline.MaximumPoint.X,
+                                j == 0 ? outline.MinimumPoint.Y : outline.MaximumPoint.Y,
+                                k == 0 ? outline.MinimumPoint.Z : outline.MaximumPoint.Z);
+                            
+                            double u = (lp3 - wallOrigin).DotProduct(wallDir);
                             minU = Math.Min(minU, u);
                             maxU = Math.Max(maxU, u);
-                            minZ = Math.Min(minZ, wp.Z);
-                            maxZ = Math.Max(maxZ, wp.Z);
+                            minZ = Math.Min(minZ, lp3.Z);
+                            maxZ = Math.Max(maxZ, lp3.Z);
                             hasPt = true;
                         }
                     }
@@ -321,11 +372,9 @@ namespace MEPTools.LinkElementWallHole
                     double height = (maxZ - minZ) + 2 * offsetFeet;
                     height += GetCableTrayExtraHeightFeet(relatedPipes, pipeTf);
 
-                    // 3) depth：读现有值（无墙无法重算）
                     double depth = hole.LookupParameter("NDH_Depth")?.AsDouble() ?? 0.0;
                     if (depth <= 0.0) depth = 200.0 / 304.8;
 
-                    // 4) 先改参数，再移动位置（顺序敏感）
                     SetParam(hole, "NDH_Width", width);
                     SetParam(hole, "NDH_Height", height);
                     SetParam(hole, "NDH_Depth", depth);
@@ -338,6 +387,7 @@ namespace MEPTools.LinkElementWallHole
                         ElementTransformUtils.MoveElement(doc, hole.Id, delta);
 
                     updated++;
+                    MEPLogger.Instance.AppendLine($"[Update] 成功更新洞 {hole.Id}，关联 MEP 数量：{relatedPipes.Count}。");
                 }
 
                 tran.Commit();
@@ -346,41 +396,110 @@ namespace MEPTools.LinkElementWallHole
                 {
                     throw new Exception(
                         $"未更新任何墙洞。\n" +
-                        $"可能原因：所选 MEP 与所选墙洞距离超过 {SEARCH_TOLERANCE_MM:0}mm，" +
+                        $"可能原因：您选中的 MEP 与所选墙洞在空间上并没有重叠（相隔超过 {MATCH_TOLERANCE_MM}mm），\n" +
                         $"或所选元素不是族名 \"{FAMILY_NAME}\" 的墙洞。\n" +
                         $"（跳过 {skippedNoMatch} 个未匹配的洞）");
                 }
+                
+                MEPLogger.Instance.AppendLine($"[Update] 更新完成。共更新 {updated} 个洞，跳过 {skippedNoMatch} 个。");
             }
 
             return Result.Succeeded;
         }
 
-        // 用 MEP 包围盒中心是否落在洞 bbox（±容差）内来判断"相邻"
+        // ========== 辅助方法：提取链接中的 MEP 引用 ==========
+        private bool ParsePipeReferences(
+            Document doc,
+            IList<Reference> refs,
+            out RevitLinkInstance pipeLinkInstance,
+            out List<Element> pipeElements,
+            out Transform pipeTf)
+        {
+            pipeLinkInstance = null;
+            pipeElements = new List<Element>();
+            pipeTf = null;
+
+            Document pipeLinkDoc = null;
+            foreach (Reference pref in refs)
+            {
+                RevitLinkInstance inst = doc.GetElement(pref.ElementId) as RevitLinkInstance;
+                if (inst == null) continue;
+                
+                if (pipeLinkInstance == null)
+                {
+                    pipeLinkInstance = inst;
+                    pipeLinkDoc = inst.GetLinkDocument();
+                }
+                else if (pipeLinkInstance.Id != inst.Id)
+                {
+                    throw new Exception("所有管线必须来自同一个链接");
+                }
+                
+                Element e = pipeLinkDoc?.GetElement(pref.LinkedElementId);
+                if (e != null) 
+                {
+                    if (e is Duct || e is Pipe || e is CableTray)
+                        pipeElements.Add(e);
+                }
+            }
+
+            if (pipeElements.Count == 0) return false;
+            
+            pipeTf = pipeLinkInstance.GetTotalTransform();
+            return true;
+        }
+
+        // ========== 核心逻辑：包围盒相交判断 ==========
         private List<Element> MatchPipesToHole(
-            FamilyInstance hole, List<Element> pipeElements, Transform pipeTf)
+            FamilyInstance hole, Dictionary<Element, Outline> pipeOutlines)
         {
             BoundingBoxXYZ holeBbox = hole.get_BoundingBox(null);
             if (holeBbox == null) return new List<Element>();
 
-            double tol = SEARCH_TOLERANCE_MM / 304.8;
-            Outline outline = new Outline(
+            double tol = MATCH_TOLERANCE_MM / 304.8;
+            Outline holeOutline = new Outline(
                 holeBbox.Min - new XYZ(tol, tol, tol),
                 holeBbox.Max + new XYZ(tol, tol, tol));
 
             List<Element> result = new List<Element>();
-            foreach (var pipe in pipeElements)
+            foreach (var kvp in pipeOutlines)
             {
-                BoundingBoxXYZ pb = pipe.get_BoundingBox(null);
-                if (pb == null) continue;
-
-                XYZ pmin = pipeTf.OfPoint(pb.Min);
-                XYZ pmax = pipeTf.OfPoint(pb.Max);
-                XYZ pcenter = (pmin + pmax) / 2;
-
-                if (outline.Contains(pcenter, 0.001))
-                    result.Add(pipe);
+                if (holeOutline.Intersects(kvp.Value, tol) || 
+                    holeOutline.Contains((kvp.Value.MinimumPoint + kvp.Value.MaximumPoint) / 2, tol))
+                {
+                    result.Add(kvp.Key);
+                }
             }
             return result;
+        }
+
+        // ========== 辅助方法：精确计算包围盒 ==========
+        private Outline GetWorldOutline(BoundingBoxXYZ bbox, Transform transform)
+        {
+            if (bbox == null) return null;
+
+            XYZ[] corners = new XYZ[8];
+            corners[0] = new XYZ(bbox.Min.X, bbox.Min.Y, bbox.Min.Z);
+            corners[1] = new XYZ(bbox.Max.X, bbox.Min.Y, bbox.Min.Z);
+            corners[2] = new XYZ(bbox.Min.X, bbox.Max.Y, bbox.Min.Z);
+            corners[3] = new XYZ(bbox.Max.X, bbox.Max.Y, bbox.Min.Z);
+            corners[4] = new XYZ(bbox.Min.X, bbox.Min.Y, bbox.Max.Z);
+            corners[5] = new XYZ(bbox.Max.X, bbox.Min.Y, bbox.Max.Z);
+            corners[6] = new XYZ(bbox.Min.X, bbox.Max.Y, bbox.Max.Z);
+            corners[7] = new XYZ(bbox.Max.X, bbox.Max.Y, bbox.Max.Z);
+
+            double minX = double.MaxValue, minY = double.MaxValue, minZ = double.MaxValue;
+            double maxX = double.MinValue, maxY = double.MinValue, maxZ = double.MinValue;
+
+            foreach (XYZ corner in corners)
+            {
+                XYZ worldPt = transform.OfPoint(corner);
+                minX = Math.Min(minX, worldPt.X); maxX = Math.Max(maxX, worldPt.X);
+                minY = Math.Min(minY, worldPt.Y); maxY = Math.Max(maxY, worldPt.Y);
+                minZ = Math.Min(minZ, worldPt.Z); maxZ = Math.Max(maxZ, worldPt.Z);
+            }
+
+            return new Outline(new XYZ(minX, minY, minZ), new XYZ(maxX, maxY, maxZ));
         }
 
         // ========== 读取配置 ==========
@@ -410,7 +529,10 @@ namespace MEPTools.LinkElementWallHole
                     }
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                MEPLogger.Instance.LogException("LoadConfig", ex);
+            }
         }
 
         // ========== 桥架额外高度 ==========
@@ -424,10 +546,12 @@ namespace MEPTools.LinkElementWallHole
                 BoundingBoxXYZ bbox = e.get_BoundingBox(null);
                 if (bbox == null) continue;
 
-                XYZ worldPt = transform.OfPoint(bbox.Max);
-                if (worldPt.Z > maxZ)
+                Outline worldOutline = GetWorldOutline(bbox, transform);
+                if (worldOutline == null) continue;
+
+                if (worldOutline.MaximumPoint.Z > maxZ)
                 {
-                    maxZ = worldPt.Z;
+                    maxZ = worldOutline.MaximumPoint.Z;
                     highest = e;
                 }
             }
@@ -451,29 +575,49 @@ namespace MEPTools.LinkElementWallHole
             }
         }
 
-        // 第 1 次选择：链接元素过滤器
-        private class AnyLinkElementFilter : ISelectionFilter
+        // ========== 选择过滤器区 ==========
+
+        // 1. 过滤器：只能选链接中的 MEP（管/风管/桥架）
+        private class LinkMEPSelectionFilter : ISelectionFilter
         {
-            public bool AllowElement(Element e) => e is RevitLinkInstance;
-            public bool AllowReference(Reference r, XYZ p) => true;
+            private readonly Document _doc;
+            public LinkMEPSelectionFilter(Document doc) { _doc = doc; }
+
+            public bool AllowElement(Element elem) => elem is RevitLinkInstance;
+
+            public bool AllowReference(Reference reference, XYZ position)
+            {
+                RevitLinkInstance linkInst = _doc.GetElement(reference.ElementId) as RevitLinkInstance;
+                if (linkInst == null) return false;
+                Document linkDoc = linkInst.GetLinkDocument();
+                if (linkDoc == null) return false;
+                Element linkedElem = linkDoc.GetElement(reference.LinkedElementId);
+                
+                return linkedElem is Duct 
+                    || linkedElem is Pipe 
+                    || linkedElem is CableTray;
+            }
         }
 
-        // 第 2 次选择：当前项目的 WallHole 过滤器
-        private class WallHoleFilter : ISelectionFilter
+        // 2. 过滤器：只能选链接中的墙
+        private class LinkWallSelectionFilter : ISelectionFilter
         {
-            private readonly string _familyName;
-            public WallHoleFilter(string familyName) { _familyName = familyName; }
+            private readonly Document _doc;
+            public LinkWallSelectionFilter(Document doc) { _doc = doc; }
 
-            public bool AllowElement(Element e)
+            public bool AllowElement(Element elem) => elem is RevitLinkInstance;
+
+            public bool AllowReference(Reference reference, XYZ position)
             {
-                if (e is FamilyInstance fi
-                    && fi.Symbol?.Family?.Name == _familyName
-                    && fi.Category?.Id.IntegerValue == (int)BuiltInCategory.OST_GenericModel)
-                    return true;
-                return false;
+                RevitLinkInstance linkInst = _doc.GetElement(reference.ElementId) as RevitLinkInstance;
+                if (linkInst == null) return false;
+                Document linkDoc = linkInst.GetLinkDocument();
+                if (linkDoc == null) return false;
+                Element linkedElem = linkDoc.GetElement(reference.LinkedElementId);
+                
+                return linkedElem is Wall 
+                    || linkedElem.Category?.Id.IntegerValue == (int)BuiltInCategory.OST_Walls;
             }
-
-            public bool AllowReference(Reference r, XYZ p) => true;
         }
     }
 }
