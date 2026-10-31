@@ -5,6 +5,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
+using MEPTools.Shared;
 
 namespace MEPTools.MEPPlanarSaddleBend
 {
@@ -85,9 +86,6 @@ namespace MEPTools.MEPPlanarSaddleBend
             return s;
         }
 
-        // =====================================================================
-        // 单元素处理
-        // =====================================================================
         public bool ProcessSingleElement(Document doc, ElementId elemId, SaddleBendResult r)
         {
             if (r == null || !r.IsValid) { _log.AppendLine("✗ 计算结果无效"); return false; }
@@ -103,6 +101,7 @@ namespace MEPTools.MEPPlanarSaddleBend
             _log.AppendLine("  A   = " + MEPSaddleBendCalculator.Fmt(r.A));
             _log.AppendLine("  B   = " + MEPSaddleBendCalculator.Fmt(r.B));
             _log.AppendLine("  P2p = " + MEPSaddleBendCalculator.Fmt(r.P2p));
+
             _log.AppendLine(string.Format("  MidLen={0:F1}mm, ExtendE0={1}, ExtendE1={2}",
                 r.MidLen * FtToMm, r.ExtendE0, r.ExtendE1));
 
@@ -123,9 +122,6 @@ namespace MEPTools.MEPPlanarSaddleBend
             return ProcessPipeDuct(doc, elem, r, snap, kind.Value);
         }
 
-        // =====================================================================
-        // 延长原管端点
-        // =====================================================================
         private bool ExtendCurveEnds(Document doc, Element elem, SaddleBendResult r)
         {
             var lc = (elem as MEPCurve)?.Location as LocationCurve;
@@ -161,13 +157,9 @@ namespace MEPTools.MEPPlanarSaddleBend
             }
         }
 
-        // =====================================================================
-        // Pipe / Duct：两次打断 + 保留 head/tail + 只重建 mid
-        // =====================================================================
         private bool ProcessPipeDuct(Document doc, Element elem, SaddleBendResult r,
             Snap snap, MepKind kind)
         {
-            // 判定哪个切点离 E0 更远（沿轴投影）
             double dP0 = (r.P0 - r.OriginalEnd0).DotProduct(r.AxisDir);
             double dP2p = (r.P2p - r.OriginalEnd0).DotProduct(r.AxisDir);
             bool p0IsFar = dP0 > dP2p;
@@ -175,7 +167,6 @@ namespace MEPTools.MEPPlanarSaddleBend
             XYZ firstPt = p0IsFar ? r.P0 : r.P2p;
             XYZ secondPt = p0IsFar ? r.P2p : r.P0;
 
-            // ---------- 第一次打断 ----------
             ElementId firstNewId = ElementId.InvalidElementId;
             if (!IsAtSegmentEnd(doc, elem.Id, firstPt))
             {
@@ -194,7 +185,6 @@ namespace MEPTools.MEPPlanarSaddleBend
                 _log.AppendLine("跳过打断 " + MEPSaddleBendCalculator.Fmt(firstPt) + "（与端点重合）");
             }
 
-            // ---------- 第二次打断 ----------
             var segPool = new List<ElementId> { elem.Id };
             if (firstNewId != ElementId.InvalidElementId) segPool.Add(firstNewId);
 
@@ -223,7 +213,6 @@ namespace MEPTools.MEPPlanarSaddleBend
                 _log.AppendLine("跳过打断 " + MEPSaddleBendCalculator.Fmt(secondPt) + "（与端点重合）");
             }
 
-            // ---------- 汇总所有段 ----------
             var allIds = new List<ElementId> { elem.Id };
             if (firstNewId != ElementId.InvalidElementId) allIds.Add(firstNewId);
             if (secondNewId != ElementId.InvalidElementId) allIds.Add(secondNewId);
@@ -270,7 +259,6 @@ namespace MEPTools.MEPPlanarSaddleBend
             }
             doc.Regenerate();
 
-            // ---------- 创建 3 段 ----------
             XYZ[] pts = r.Points;
             Element seg1 = CreateMEPCurve(doc, snap, pts[0], pts[1]);
             if (seg1 == null) { _log.AppendLine("✗ 斜段1 创建失败"); return false; }
@@ -291,10 +279,6 @@ namespace MEPTools.MEPPlanarSaddleBend
 
             doc.Regenerate();
 
-            // ============================================================
-            // 4 个弯头 —— 关键修复：按 p0IsFar 决定 head/tail 连哪一端
-            // ============================================================
-            // 内部弯头（A、B 处）两种情况都一样
             if (seg2 != null)
             {
                 TryCreateElbow(doc, seg1.Id, seg2.Id, pts[1], "弯头(斜段1-平移)");
@@ -305,12 +289,8 @@ namespace MEPTools.MEPPlanarSaddleBend
                 TryCreateElbow(doc, seg1.Id, seg3.Id, pts[1], "弯头(斜段1-斜段2)");
             }
 
-            // 外部弯头：按 p0IsFar 分支
             if (p0IsFar)
             {
-                // 段划分：[E0,P2p] [P2p,P0] [P0,E1]
-                // head=[E0,P2p] 终止于 P2p  → head ↔ seg3（seg3 的 P2p 端）
-                // tail=[P0,E1] 起始于 P0   → seg1 ↔ tail
                 if (headSeg != ElementId.InvalidElementId)
                     TryCreateElbow(doc, headSeg, seg3.Id, r.P2p, "弯头(head-斜段2 @ P2p)");
                 if (tailSeg != ElementId.InvalidElementId)
@@ -318,9 +298,6 @@ namespace MEPTools.MEPPlanarSaddleBend
             }
             else
             {
-                // 段划分：[E0,P0] [P0,P2p] [P2p,E1]
-                // head=[E0,P0] 终止于 P0    → head ↔ seg1
-                // tail=[P2p,E1] 起始于 P2p → seg3 ↔ tail
                 if (headSeg != ElementId.InvalidElementId)
                     TryCreateElbow(doc, headSeg, seg1.Id, r.P0, "弯头(head-斜段1 @ P0)");
                 if (tailSeg != ElementId.InvalidElementId)
@@ -330,9 +307,6 @@ namespace MEPTools.MEPPlanarSaddleBend
             return true;
         }
 
-        // =====================================================================
-        // CableTray：无 BreakCurve，全删重建 + 两端精确重连
-        // =====================================================================
         private bool ProcessCableTray(Document doc, CableTray tray, SaddleBendResult r, Snap snap)
         {
             if (tray == null) { _log.AppendLine("✗ CableTray 为空"); return false; }
@@ -402,9 +376,6 @@ namespace MEPTools.MEPPlanarSaddleBend
             return true;
         }
 
-        // =====================================================================
-        // 打断辅助
-        // =====================================================================
         private ElementId BreakCurveAt(Document doc, MepKind kind, ElementId elemId, XYZ pt)
         {
             try
@@ -465,9 +436,6 @@ namespace MEPTools.MEPPlanarSaddleBend
             return best;
         }
 
-        // =====================================================================
-        // 创建管段
-        // =====================================================================
         private Element CreateMEPCurve(Document doc, Snap snap, XYZ s, XYZ e)
         {
             if (s == null || e == null) return null;
@@ -527,9 +495,6 @@ namespace MEPTools.MEPPlanarSaddleBend
             return el;
         }
 
-        // =====================================================================
-        // 弯头
-        // =====================================================================
         private bool TryCreateElbow(Document doc, ElementId idA, ElementId idB,
             XYZ atPt, string tag)
         {
@@ -630,9 +595,6 @@ namespace MEPTools.MEPPlanarSaddleBend
             }
         }
 
-        // =====================================================================
-        // 外部连接（只重连 FamilyInstance，沿用 LateralBend）
-        // =====================================================================
         private Connector CaptureExternalConnectorAt(MEPCurve curve, XYZ pt)
         {
             if (curve == null) return null;
@@ -689,9 +651,6 @@ namespace MEPTools.MEPPlanarSaddleBend
             }
         }
 
-        // =====================================================================
-        // 通用辅助
-        // =====================================================================
         private static ConnectorManager GetConnectorManager(Element elem)
         {
             if (elem is MEPCurve mep) return mep.ConnectorManager;
