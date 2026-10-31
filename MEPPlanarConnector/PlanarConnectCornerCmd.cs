@@ -1,8 +1,11 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Windows.Forms;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
+using Autodesk.Revit.UI.Selection;
 using MEPTools.Shared;
 using MEPTools.MEPPlanarConnector.Core;
 
@@ -17,15 +20,60 @@ namespace MEPTools.MEPPlanarConnector.Commands
             Document doc = uidoc?.Document;
             if (doc == null) return Result.Cancelled;
 
-            var validElems = GetSelectedCurves(uidoc, doc);
-            if (validElems.Count < 2)
+            var preselectedIds = uidoc.Selection.GetElementIds();
+            var preselectedCurves = preselectedIds.Select(id => doc.GetElement(id)).Where(e => e is MEPCurve).ToList();
+
+            List<Element> aList = new List<Element>();
+            List<Element> bList = new List<Element>();
+            
+            var filter = new MEPCurveSelectionFilter();
+
+            using (var spaceFinisher = new SpaceKeyFinisher(Keys.Space, "完成", "Finish", "Complete"))
             {
-                TaskDialog.Show("提示", "请选中至少 2 个 MEP 元素。\n\n（转角模式：延长并生成弯头）");
+                spaceFinisher.Enable(); // 修复 Bug：无条件先启用热键
+                
+                try
+                {
+                    if (preselectedCurves.Count > 0)
+                    {
+                        aList = preselectedCurves;
+                        uidoc.Selection.SetElementIds(new List<ElementId>()); 
+                        MEPLogger.Instance.AppendLine($"[Corner] 已获取预选 A 组元素 {aList.Count} 个。");
+                    }
+                    else
+                    {
+                        IList<Reference> refsA = uidoc.Selection.PickObjects(
+                            ObjectType.Element, filter, "第一步：请选择 A 组元素（按空格键结束）");
+                        aList = refsA.Select(r => doc.GetElement(r)).ToList();
+                    }
+
+                    IList<Reference> refsB = uidoc.Selection.PickObjects(
+                        ObjectType.Element, filter, "第二步：请选择 B 组元素（按空格键结束）");
+                    bList = refsB.Select(r => doc.GetElement(r)).ToList();
+                }
+                catch (Autodesk.Revit.Exceptions.OperationCanceledException)
+                {
+                    return Result.Cancelled;
+                }
+                finally
+                {
+                    spaceFinisher.Disable();
+                }
+            }
+
+            if (!aList.Any() || !bList.Any())
+            {
+                TaskDialog.Show("提示", "A 组或 B 组未选择任何有效管道，操作取消。");
                 return Result.Cancelled;
             }
 
-            var (aList, bList) = SplitGroups(validElems);
-            var pairs = PlanarConnectorCalculator.MatchPairs(aList, bList);
+            var pairs = PlanarConnectorCalculator.MatchPairs(aList, bList, true);
+
+            if (pairs.Count == 0)
+            {
+                TaskDialog.Show("提示", "未能匹配到任何一对合法元素。\n请检查是否选错了模式。");
+                return Result.Cancelled;
+            }
 
             MEPLogger.Instance.StartSession("MEP 转角连接");
             var service = new PlanarConnectorService();
@@ -46,7 +94,6 @@ namespace MEPTools.MEPPlanarConnector.Commands
                         continue;
                     }
 
-                    // 转角连接做系统警告提示，但不阻断
                     if (!IsSystemTypeCompatible(elA, elB))
                     {
                         MEPLogger.Instance.AppendLine($"⚠ 警告: {elA.Id} & {elB.Id} 系统类型不一致，仍尝试连接");
@@ -59,7 +106,12 @@ namespace MEPTools.MEPPlanarConnector.Commands
             }
 
             MEPLogger.Instance.EndSession($"成功 {success} 对，失败 {fail} 对");
-            TaskDialog.Show("转角连接", $"完成！\n成功：{success} 对\n失败：{fail} 对");
+            
+            string hint = success == 0 && fail > 0 
+                ? "\n\n提示：若两根管道是平行错开的，请使用【共线连接】命令。" 
+                : "";
+            TaskDialog.Show("转角连接", $"完成！\n成功：{success} 对\n失败：{fail} 对{hint}");
+            
             return Result.Succeeded;
         }
 
@@ -68,27 +120,18 @@ namespace MEPTools.MEPPlanarConnector.Commands
             var ta = PlanarConnectorCalculator.GetElementType(a);
             var tb = PlanarConnectorCalculator.GetElementType(b);
             
-            // 修复：直接使用 MEPElementType 枚举，而不是 PlanarConnectorCalculator.MEPElementType
             if (ta == MEPElementType.CableTray) return true;
 
             var sysA = PlanarConnectorCalculator.GetSystemTypeId(a, ta);
             var sysB = PlanarConnectorCalculator.GetSystemTypeId(b, tb);
             return sysA == sysB;
         }
-
-        private List<Element> GetSelectedCurves(UIDocument uidoc, Document doc)
-        {
-            return uidoc.Selection.GetElementIds()
-                .Select(id => doc.GetElement(id))
-                .Where(el => el is MEPCurve)
-                .ToList();
-        }
-
-        private (List<Element>, List<Element>) SplitGroups(List<Element> all)
-        {
-            if (all.Count == 2) return (new List<Element> { all[0] }, new List<Element> { all[1] });
-            int half = all.Count / 2;
-            return (all.Take(half).ToList(), all.Skip(half).ToList());
-        }
+    }
+    
+    // 全局管道选择过滤器
+    public class MEPCurveSelectionFilter : ISelectionFilter
+    {
+        public bool AllowElement(Element elem) { return elem is MEPCurve; }
+        public bool AllowReference(Reference reference, XYZ position) { return false; }
     }
 }

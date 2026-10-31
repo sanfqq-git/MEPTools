@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.DB.Mechanical;
@@ -59,9 +60,6 @@ namespace MEPTools.MEPPlanarConnector.Core
             return GetElementType(a) == GetElementType(b);
         }
 
-        // ==========================================
-        // 1. 计算共线
-        // ==========================================
         public static PlanarConnectGeometry ComputeCollinear(Element a, Element b)
         {
             var g = new PlanarConnectGeometry { IsValid = false, IsCollinear = true };
@@ -81,16 +79,14 @@ namespace MEPTools.MEPPlanarConnector.Core
             double cross = da.X * db.Y - da.Y * db.X;
             if (Math.Abs(cross) > 1e-6) { g.ErrorMessage = "两管不平行，无法共线延长"; return g; }
 
-            // 检查距离是否在同一条直线上
+            XYZ aMid = (a0 + a1) * 0.5;
             XYZ bMid = (b0 + b1) * 0.5;
             XYZ perp = new XYZ(-da.Y, da.X, 0);
             double perpDist = Math.Abs((bMid - a0).DotProduct(perp));
-            double tolFt = UnitUtils.ConvertToInternalUnits(1.0, UnitTypeId.Millimeters);
+            double tolFt = UnitUtils.ConvertToInternalUnits(50.0, UnitTypeId.Millimeters); // 允许50mm错位
 
-            if (perpDist > tolFt) { g.ErrorMessage = $"两管平行但错开 {perpDist * FtToMm:F1}mm，无法连接"; return g; }
+            if (perpDist > tolFt) { g.ErrorMessage = $"两管平行但错开 {perpDist * FtToMm:F1}mm，超出容差"; return g; }
 
-            // 找靠近彼此的端点
-            XYZ aMid = (a0 + a1) * 0.5;
             g.PA = (a0.DistanceTo(bMid) < a1.DistanceTo(bMid)) ? a0 : a1;
             g.PB = (b0.DistanceTo(aMid) < b1.DistanceTo(aMid)) ? b0 : b1;
             g.P = g.PA;
@@ -98,9 +94,6 @@ namespace MEPTools.MEPPlanarConnector.Core
             return g;
         }
 
-        // ==========================================
-        // 2. 计算转角
-        // ==========================================
         public static PlanarConnectGeometry ComputeCorner(Element a, Element b)
         {
             var g = new PlanarConnectGeometry { IsValid = false, IsCollinear = false };
@@ -120,7 +113,6 @@ namespace MEPTools.MEPPlanarConnector.Core
             double cross = da.X * db.Y - da.Y * db.X;
             if (Math.Abs(cross) < 1e-6) { g.ErrorMessage = "两管平行，无法转角连接"; return g; }
 
-            // 交点计算
             XYZ v = new XYZ(b0.X - a0.X, b0.Y - a0.Y, 0);
             double det = da.X * (-db.Y) - (-db.X) * da.Y;
             if (Math.Abs(det) < 1e-9) { g.ErrorMessage = "交点计算奇异"; return g; }
@@ -128,54 +120,82 @@ namespace MEPTools.MEPPlanarConnector.Core
             double tP = (v.X * (-db.Y) - (-db.X) * v.Y) / det;
             g.P = a0 + da * tP;
 
-            // 找靠近交点的端点
             g.PA = (a0.DistanceTo(g.P) < a1.DistanceTo(g.P)) ? a0 : a1;
             g.PB = (b0.DistanceTo(g.P) < b1.DistanceTo(g.P)) ? b0 : b1;
-
-            // 内部检查
-            double tOnA = (g.P - a0).DotProduct(da) / (a1 - a0).GetLength();
-            double tOnB = (g.P - b0).DotProduct(db) / (b1 - b0).GetLength();
-
-            if (tOnA > 1e-4 && tOnA < 1 - 1e-4) { g.ErrorMessage = "交点落在 A 内部（不支持修剪）"; return g; }
-            if (tOnB > 1e-4 && tOnB < 1 - 1e-4) { g.ErrorMessage = "交点落在 B 内部（不支持修剪）"; return g; }
 
             g.IsValid = true;
             return g;
         }
 
-        // 修复：配对逻辑，改为按端点最近距离匹配
-        public static List<ConnectorPair> MatchPairs(List<Element> aList, List<Element> bList)
+        public static List<ConnectorPair> MatchPairs(List<Element> aList, List<Element> bList, bool isCorner)
         {
             var pairs = new List<ConnectorPair>();
-            var usedB = new HashSet<ElementId>();
+            if (aList == null || bList == null || !aList.Any() || !bList.Any()) return pairs;
 
-            foreach (var a in aList)
+            if (!isCorner)
             {
-                Line la = GetAxisLine(a);
-                if (la == null) continue;
+                // ========== 共线模式：采用空间排序法 ==========
+                Line refLine = GetAxisLine(aList[0]);
+                if (refLine == null) return pairs;
+                XYZ dir = (refLine.GetEndPoint(1) - refLine.GetEndPoint(0)).Normalize();
+                bool isHorizontal = Math.Abs(dir.X) > Math.Abs(dir.Y);
 
-                Element bestB = null;
-                double minDistance = double.MaxValue;
-
-                foreach (var b in bList)
+                Func<Element, double> getSortValue = (el) =>
                 {
-                    if (usedB.Contains(b.Id)) continue;
-                    Line lb = GetAxisLine(b);
-                    if (lb == null) continue;
+                    var line = GetAxisLine(el);
+                    if (line == null) return 0;
+                    var mid = (line.GetEndPoint(0) + line.GetEndPoint(1)) * 0.5;
+                    return isHorizontal ? mid.Y : mid.X;
+                };
 
-                    // 取两个轴线的四个端点间的最小距离，而不是中点距离
-                    double d = Math.Min(
-                        Math.Min(la.GetEndPoint(0).DistanceTo(lb.GetEndPoint(0)), la.GetEndPoint(0).DistanceTo(lb.GetEndPoint(1))),
-                        Math.Min(la.GetEndPoint(1).DistanceTo(lb.GetEndPoint(0)), la.GetEndPoint(1).DistanceTo(lb.GetEndPoint(1)))
-                    );
+                var sortedA = aList.OrderBy(getSortValue).ToList();
+                var sortedB = bList.OrderBy(getSortValue).ToList();
 
-                    if (d < minDistance) { minDistance = d; bestB = b; }
+                int count = Math.Min(sortedA.Count, sortedB.Count);
+                for (int i = 0; i < count; i++)
+                {
+                    pairs.Add(new ConnectorPair { AId = sortedA[i].Id, BId = sortedB[i].Id });
                 }
+            }
+            else
+            {
+                // ========== 转角模式：采用交点距离最优贪心匹配 ==========
+                var availableB = new List<Element>(bList);
 
-                if (bestB != null)
+                foreach (var a in aList)
                 {
-                    usedB.Add(bestB.Id);
-                    pairs.Add(new ConnectorPair { AId = a.Id, BId = bestB.Id, Distance = minDistance });
+                    Element bestB = null;
+                    double minCost = double.MaxValue;
+
+                    foreach (var b in availableB)
+                    {
+                        if (!IsSameType(a, b)) continue;
+
+                        MEPElementType typeA = GetElementType(a);
+                        MEPElementType typeB = GetElementType(b);
+                        if (typeA == MEPElementType.Pipe || typeA == MEPElementType.Duct)
+                        {
+                            if (GetSystemTypeId(a, typeA) != GetSystemTypeId(b, typeB)) continue;
+                        }
+
+                        var g = ComputeCorner(a, b);
+                        if (g.IsValid)
+                        {
+                            // 核心：交点P到A端点的距离 + 交点P到B端点的距离，越小越说明该配对正确
+                            double cost = g.PA.DistanceTo(g.P) + g.PB.DistanceTo(g.P);
+                            if (cost < minCost)
+                            {
+                                minCost = cost;
+                                bestB = b;
+                            }
+                        }
+                    }
+
+                    if (bestB != null)
+                    {
+                        pairs.Add(new ConnectorPair { AId = a.Id, BId = bestB.Id });
+                        availableB.Remove(bestB);
+                    }
                 }
             }
             return pairs;

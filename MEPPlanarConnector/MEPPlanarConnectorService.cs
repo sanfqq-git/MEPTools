@@ -12,9 +12,6 @@ namespace MEPTools.MEPPlanarConnector.Core
         public PlanarConnectorService() : this(MEPLogger.Instance) { }
         public PlanarConnectorService(MEPLogger log) { _log = log ?? MEPLogger.Instance; }
 
-        // ==========================================
-        // 共线处理逻辑
-        // ==========================================
         public bool ProcessCollinear(Document doc, Element a, Element b)
         {
             var g = PlanarConnectorCalculator.ComputeCollinear(a, b);
@@ -22,32 +19,38 @@ namespace MEPTools.MEPPlanarConnector.Core
 
             if (g.PA.DistanceTo(g.PB) < 1e-4) return true; // 已重合
 
-            if (!ExtendElementEndpoint(doc, a, g.PA, g.PB))
+            if (!MoveEndpointTo(doc, a, g.PA, g.PB))
             {
-                _log.AppendLine("✗ 延长失败");
+                _log.AppendLine("✗ 延伸失败");
                 return false;
             }
             _log.AppendLine($"✓ 共线连接成功: {a.Id} -> {b.Id}");
             return true;
         }
 
-        // ==========================================
-        // 转角处理逻辑
-        // ==========================================
         public bool ProcessCorner(Document doc, Element a, Element b)
         {
             var g = PlanarConnectorCalculator.ComputeCorner(a, b);
             if (!g.IsValid) { _log.AppendLine("✗ " + g.ErrorMessage); return false; }
 
-            // 延长 A
+            // 移动 A 的端点到交点 (自动判定是延长还是修剪)
             if (g.PA.DistanceTo(g.P) > 1e-4)
             {
-                if (!ExtendElementEndpoint(doc, a, g.PA, g.P)) return false;
+                if (!MoveEndpointTo(doc, a, g.PA, g.P)) 
+                {
+                    _log.AppendLine($"✗ 移动 A({a.Id}) 失败");
+                    return false; 
+                }
             }
-            // 延长 B
+            
+            // 移动 B 的端点到交点
             if (g.PB.DistanceTo(g.P) > 1e-4)
             {
-                if (!ExtendElementEndpoint(doc, b, g.PB, g.P)) return false;
+                if (!MoveEndpointTo(doc, b, g.PB, g.P)) 
+                {
+                    _log.AppendLine($"✗ 移动 B({b.Id}) 失败");
+                    return false;
+                }
             }
 
             doc.Regenerate();
@@ -56,9 +59,9 @@ namespace MEPTools.MEPPlanarConnector.Core
         }
 
         /// <summary>
-        /// 把元素的端点移动
+        /// 把元素的端点移动到新位置（支持延长和修剪）
         /// </summary>
-        private bool ExtendElementEndpoint(Document doc, Element e, XYZ oldEndPt, XYZ newEndPt)
+        private bool MoveEndpointTo(Document doc, Element e, XYZ oldEndPt, XYZ newEndPt)
         {
             var mc = e as MEPCurve;
             var lc = mc?.Location as LocationCurve;
@@ -70,10 +73,12 @@ namespace MEPTools.MEPPlanarConnector.Core
 
             const double tol = 1e-3;
             XYZ newP0 = p0, newP1 = p1;
+            
             if (p0.DistanceTo(oldEndPt) < tol) newP0 = newEndPt;
             else if (p1.DistanceTo(oldEndPt) < tol) newP1 = newEndPt;
             else return false;
 
+            // 防止长度变为 0
             if (newP0.DistanceTo(newP1) < 1e-4) return false;
 
             try
