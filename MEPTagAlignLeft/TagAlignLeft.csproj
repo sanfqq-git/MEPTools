@@ -25,7 +25,7 @@
     <OutputPath>bin\Release\</OutputPath>
   </PropertyGroup>
   
-  <!-- 引用 Revit API 核心库 -->
+  <!-- 引用 Revit API 核心库及附加库 -->
   <ItemGroup>
     <Reference Include="RevitAPI">
       <HintPath>C:\Program Files\Autodesk\Revit 2022\RevitAPI.dll</HintPath>
@@ -35,15 +35,32 @@
       <HintPath>C:\Program Files\Autodesk\Revit 2022\RevitAPIUI.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <!-- 【新增】引用 Revit 的 WPF UI 附加库，用于 ComponentManager -->
+    <Reference Include="AdWindows">
+      <HintPath>C:\Program Files\Autodesk\Revit 2022\AdWindows.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    
+    <!-- 系统基础引用 -->
     <Reference Include="System" />
     <Reference Include="System.Core" />
     <Reference Include="PresentationCore" />
     <Reference Include="PresentationFramework" />
     <Reference Include="WindowsBase" />
+    <!-- 引用 Windows Forms 程序集，用于 Keys 等类型 -->
+    <Reference Include="System.Windows.Forms" />
   </ItemGroup>
 
+  <!-- 编译当前目录下的所有 cs 文件 -->
   <ItemGroup>
     <Compile Include="**\*.cs" Exclude="obj\**\*.cs;bin\**\*.cs" />
+  </ItemGroup>
+      
+  <!-- 引入同级目录 Shared 下的共享代码 -->
+  <ItemGroup>
+    <Compile Include="..\Shared\*.cs">
+      <Link>Shared\%(Filename)%(Extension)</Link>
+    </Compile>
   </ItemGroup>
   
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

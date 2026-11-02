@@ -14,6 +14,9 @@ namespace MEPTools.Shared
 
             Document doc = uidoc.Document;
             ICollection<ElementId> selectedIds = uidoc.Selection.GetElementIds();
+            
+            // 使用 HashSet 进行去重，防止同时选中 Group 和内部的 Tag 导致重复添加
+            HashSet<ElementId> addedTagIds = new HashSet<ElementId>();
 
             foreach (ElementId id in selectedIds)
             {
@@ -23,7 +26,8 @@ namespace MEPTools.Shared
                 // 1. 直接选中的独立标记
                 if (elem is IndependentTag tag)
                 {
-                    tags.Add(tag);
+                    if (addedTagIds.Add(tag.Id))
+                        tags.Add(tag);
                 }
                 // 2. 如果选中了组（Group），提取组内的标记
                 else if (elem is Group group)
@@ -34,7 +38,8 @@ namespace MEPTools.Shared
                         Element member = doc.GetElement(memberId);
                         if (member is IndependentTag memberTag)
                         {
-                            tags.Add(memberTag);
+                            if (addedTagIds.Add(memberTag.Id))
+                                tags.Add(memberTag);
                         }
                     }
                 }
@@ -47,7 +52,8 @@ namespace MEPTools.Shared
                         Element mraTag = doc.GetElement(tagId);
                         if (mraTag is IndependentTag innerTag)
                         {
-                            tags.Add(innerTag);
+                            if (addedTagIds.Add(innerTag.Id))
+                                tags.Add(innerTag);
                         }
                     }
                 }

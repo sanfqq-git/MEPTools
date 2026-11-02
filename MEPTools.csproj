@@ -54,5 +54,17 @@
     <Compile Include="**\*.cs" Exclude="obj\**\*.cs;bin\**\*.cs" />
   </ItemGroup>
 
+<ItemGroup>
+  <!-- 排除所有子文件夹下的 obj 和 bin 目录，防止其生成的临时代码被重复编译 -->
+  <Compile Remove="**/obj/**" />
+  <Compile Remove="**/bin/**" />
+  <None Remove="**/obj/**" />
+  <None Remove="**/bin/**" />
+  <Content Remove="**/obj/**" />
+  <Content Remove="**/bin/**" />
+  <EmbeddedResource Remove="**/obj/**" />
+  <EmbeddedResource Remove="**/bin/**" />
+</ItemGroup>
+
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

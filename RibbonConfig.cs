@@ -48,7 +48,7 @@ namespace MEPTools
                 new ButtonConfig { Text = "标记仅左对齐", ToolTip = "仅将选中的标记（Tag）左侧对齐，不改变其垂直位置", CommandType = typeof(MEPTools.MEPTagAlignLeft.CommandAlignLeftOnly) },
                 new ButtonConfig { Text = "标记仅堆叠", ToolTip = "保持选中的标记（Tag）现有相对顺序，统一调整上下堆叠间距", CommandType = typeof(MEPTools.MEPTagAlignLeft.CommandStackOnly) },
                 
-                new ButtonConfig { Text = "MEPTag60°90°", ToolTip = "将选中的标记（Tag）修改标记引线为90度折线", CommandType = typeof(MEPTools.TagLeaderStyle.Command) },
+                new ButtonConfig { Text = "MEPTag60°", ToolTip = "将选中的标记（Tag）修改标记引线为60度折线", CommandType = typeof(MEPTools.TagLeaderStyle60.Command) },
 
                 // ================= 4. 其他辅助工具 (面板直接展示) =================
                 new ButtonConfig { Text = "链接墙洞", ToolTip = "在链接模型（如建筑墙）上批量创建墙洞", CommandType = typeof(MEPTools.LinkElementWallHole.Command) },

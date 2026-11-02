@@ -82,7 +82,7 @@ namespace MEPTools.MEPTagAlignLeft
         }
 
         /// <summary>
-        /// 执行移动向量（包含事务包装）。
+        /// 执行移动向量（包含事务包装及异常回滚）。
         /// </summary>
         public static void ExecuteMoves(Document doc, string transactionName, Dictionary<ElementId, XYZ> moveVectors)
         {
@@ -95,11 +95,20 @@ namespace MEPTools.MEPTagAlignLeft
             using (Transaction trans = new Transaction(doc, transactionName))
             {
                 trans.Start();
-                foreach (KeyValuePair<ElementId, XYZ> kvp in moveVectors)
+                try
                 {
-                    ElementTransformUtils.MoveElement(doc, kvp.Key, kvp.Value);
+                    foreach (KeyValuePair<ElementId, XYZ> kvp in moveVectors)
+                    {
+                        ElementTransformUtils.MoveElement(doc, kvp.Key, kvp.Value);
+                    }
+                    trans.Commit();
                 }
-                trans.Commit();
+                catch (Exception ex)
+                {
+                    trans.RollBack();
+                    MEPLogger.Instance.LogException(transactionName, ex);
+                    TaskDialog.Show("执行失败", $"移动标记时发生错误，可能元素被锁定或视图受限：\n{ex.Message}");
+                }
             }
         }
 
@@ -122,7 +131,7 @@ namespace MEPTools.MEPTagAlignLeft
     }
 
     /// <summary>
-    /// 默认命令：左对齐 + 堆叠
+    /// 【图标 C】主功能：左对齐 + 等距排序
     /// </summary>
     [Transaction(TransactionMode.Manual)]
     [Regeneration(RegenerationOption.Manual)]
@@ -144,14 +153,14 @@ namespace MEPTools.MEPTagAlignLeft
             double rowSpacing = CommandHelper.GetRowSpacingFromConfig();
             var moveVectors = CalculateIndependentTag.CalculateStackedLeftMoves(activeView, tags, rowSpacing);
             
-            CommandHelper.ExecuteMoves(doc, "左对齐并堆叠标记", moveVectors);
+            CommandHelper.ExecuteMoves(doc, "左对齐并等距排序标记", moveVectors);
 
             return Result.Succeeded;
         }
     }
 
     /// <summary>
-    /// 仅左对齐命令
+    /// 【图标 A】仅左对齐
     /// </summary>
     [Transaction(TransactionMode.Manual)]
     [Regeneration(RegenerationOption.Manual)]
@@ -179,7 +188,7 @@ namespace MEPTools.MEPTagAlignLeft
     }
 
     /// <summary>
-    /// 仅堆叠命令
+    /// 【图标 B】仅等距排序
     /// </summary>
     [Transaction(TransactionMode.Manual)]
     [Regeneration(RegenerationOption.Manual)]
@@ -201,7 +210,7 @@ namespace MEPTools.MEPTagAlignLeft
             double rowSpacing = CommandHelper.GetRowSpacingFromConfig();
             var moveVectors = CalculateIndependentTag.CalculateStackMoves(activeView, tags, rowSpacing);
             
-            CommandHelper.ExecuteMoves(doc, "堆叠标记", moveVectors);
+            CommandHelper.ExecuteMoves(doc, "等距排序标记", moveVectors);
 
             return Result.Succeeded;
         }

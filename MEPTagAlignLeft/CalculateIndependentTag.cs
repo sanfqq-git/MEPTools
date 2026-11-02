@@ -48,7 +48,7 @@ namespace MEPTools.MEPTagAlignLeft
         }
 
         /// <summary>
-        /// 仅左对齐：将所有 Tag 的 HeadPos 对齐到最左侧，不改变垂直位置。
+        /// 【图标 A】仅左对齐：将所有 Tag 的 HeadPos 对齐到最左侧，不改变垂直位置。
         /// </summary>
         public static Dictionary<ElementId, XYZ> CalculateLeftAlignMoves(
             View view, IList<IndependentTag> tags)
@@ -74,7 +74,7 @@ namespace MEPTools.MEPTagAlignLeft
         }
 
         /// <summary>
-        /// 仅堆叠：保持 Tag 现有的垂直相对顺序，将其按 rowSpacing 统一排列。
+        /// 【图标 B】仅等距排序：保持 Tag 现有的垂直相对顺序，将其按 rowSpacing 统一排列。
         /// </summary>
         public static Dictionary<ElementId, XYZ> CalculateStackMoves(
             View view, IList<IndependentTag> tags, double rowSpacing)
@@ -104,8 +104,7 @@ namespace MEPTools.MEPTagAlignLeft
         }
 
         /// <summary>
-        /// 左对齐 + 按现有垂直顺序从上往下垂直堆叠。
-        /// rowSpacing 表示相邻两行 Tag 头在 upDir 方向上的距离（模型单位）。
+        /// 【图标 C】左对齐 + 等距排序（主功能）：按现有垂直顺序从上往下垂直堆叠，并左对齐。
         /// </summary>
         public static Dictionary<ElementId, XYZ> CalculateStackedLeftMoves(
             View view, IList<IndependentTag> tags, double rowSpacing)
