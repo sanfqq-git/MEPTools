@@ -8,6 +8,7 @@ using Autodesk.Revit.DB.Plumbing;
 using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
+using MEPTools.Shared;
 
 namespace MEPTools.MEPAlignBottomElevation
 {
@@ -134,7 +135,7 @@ namespace MEPTools.MEPAlignBottomElevation
                     resultMsg += $"\n失败：{failMessages.Count} 个\n" +
                                  string.Join("\n", failMessages);
                 }
-                TaskDialog.Show("执行结果", resultMsg);
+                InfoCenterTip.Show("执行结果:"+ resultMsg);
             }
 
             return Result.Succeeded;

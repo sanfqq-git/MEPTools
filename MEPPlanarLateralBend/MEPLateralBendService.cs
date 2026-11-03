@@ -6,6 +6,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
+using MEPTools.Shared; // 【修复】添加共享命名空间的引用
 
 namespace MEPTools.MEPPlanarLateralBend
 {

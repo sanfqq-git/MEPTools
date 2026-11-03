@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
+using System.Linq;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Electrical;
@@ -8,6 +8,7 @@ using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
+using MEPTools.Shared;
 
 namespace MEPTools.MEPPlanarLateralBend
 {
@@ -24,31 +25,37 @@ namespace MEPTools.MEPPlanarLateralBend
             Document doc = uidoc.Document;
 
             MEPLogger.Instance.StartSession("CreateMEPLateralBend 平面拐弯");
-            debugInfo.AppendLine($"活动开始，选中元素数（原始）：{uidoc.Selection.GetElementIds()?.Count ?? 0}");
+            debugInfo.AppendLine($"活动开始，当前选中元素数：{uidoc.Selection.GetElementIds()?.Count ?? 0}");
 
             try
             {
-                ICollection<ElementId> elemIds = uidoc.Selection.GetElementIds();
-                if (elemIds == null || elemIds.Count < 1)
+                List<ElementId> elemIdList = new List<ElementId>();
+                HashSet<ElementId> addedIds = new HashSet<ElementId>();
+
+                // 1. 利用 Preselected 提取选中的 Tag，反查出被标记的管线
+                var selectedTags = Preselected.GetSelectedIndependentTags(uidoc, doc.ActiveView);
+                foreach (var tag in selectedTags)
                 {
-                    message = "请至少选中 1 个管道/风管/线槽元素！";
-                    return Result.Failed;
+                    ICollection<ElementId> taggedIds = GetTaggedElementIds(tag);
+                    foreach (var taggedId in taggedIds)
+                    {
+                        Element elem = doc.GetElement(taggedId);
+                        if (IsValidMEPElement(elem) && addedIds.Add(elem.Id))
+                            elemIdList.Add(elem.Id);
+                    }
                 }
 
-                List<ElementId> elemIdList = new List<ElementId>();
-                foreach (ElementId id in elemIds)
+                // 2. 同时检查用户直接选中的 MEP 元素
+                foreach (ElementId id in uidoc.Selection.GetElementIds())
                 {
                     Element elem = doc.GetElement(id);
-                    MEPElementType t = MEPLateralBendCalculator.GetElementType(elem);
-                    if (t == MEPElementType.Pipe
-                        || t == MEPElementType.Duct
-                        || t == MEPElementType.CableTray)
+                    if (IsValidMEPElement(elem) && addedIds.Add(id))
                         elemIdList.Add(id);
                 }
 
                 if (elemIdList.Count < 1)
                 {
-                    message = "选中的元素中未包含有效的管道、风管或线槽！";
+                    InfoCenterTip.Show("请至少选中 1 个管道/风管/线槽（或其对应的标记）！");
                     return Result.Failed;
                 }
 
@@ -56,28 +63,19 @@ namespace MEPTools.MEPPlanarLateralBend
                 var dlg = new LateralBendDialog(200.0, 45.0);
                 if (dlg.ShowDialog() != true || !dlg.Confirmed)
                 {
-                    message = "用户取消参数输入，操作终止";
                     return Result.Cancelled;
                 }
                 double offset_mm = dlg.OffsetMm;
                 double angleDeg = dlg.AngleDeg;
 
-                if (Math.Abs(offset_mm) < 1)
-                {
-                    message = "偏移量绝对值不能小于 1mm";
-                    return Result.Failed;
-                }
-
-                double offset_ft = UnitUtils.ConvertToInternalUnits(
-                    Math.Abs(offset_mm), UnitTypeId.Millimeters);
-
+                double offset_ft = UnitUtils.ConvertToInternalUnits(Math.Abs(offset_mm), UnitTypeId.Millimeters);
                 double angleRad = angleDeg * Math.PI / 180.0;
                 double projLen_mm = Math.Abs(offset_mm) * Math.Cos(angleRad) / Math.Sin(angleRad);
 
                 debugInfo.AppendLine($"参数：H = {Math.Abs(offset_mm):F2} mm, θ = {angleDeg:F1}°");
                 debugInfo.AppendLine($"斜段沿管投影 = {projLen_mm:F2} mm（= H/tan(θ)）");
 
-                // ---- 拾取 P1（参考管上的点）----
+                // ---- 拾取 P1 ----
                 Reference ref1 = uidoc.Selection.PickObject(ObjectType.PointOnElement,
                     new MEPCurveSelectionFilter(),
                     "【第 1/3 步】在参考管上拾取 P1（拐弯起点，避开弯头/三通）");
@@ -86,16 +84,13 @@ namespace MEPTools.MEPPlanarLateralBend
                 LocationCurve refLocCurve = refElem?.Location as LocationCurve;
                 if (refLocCurve == null)
                 {
-                    message = "参考元素无定位曲线！";
+                    InfoCenterTip.Show("参考元素无定位曲线！");
                     return Result.Failed;
                 }
                 Curve refCurve = refLocCurve.Curve;
                 XYZ breakPt = ref1.GlobalPoint;
 
-                debugInfo.AppendLine($"P1 打断点: ({breakPt.X:F3},{breakPt.Y:F3},{breakPt.Z:F3})");
-                debugInfo.AppendLine($"参考管 ID: {ref1.ElementId.IntegerValue}");
-
-                // ---- 拾取 P2（方向点）----
+                // ---- 拾取 P2 ----
                 XYZ sidePt;
                 try
                 {
@@ -110,8 +105,6 @@ namespace MEPTools.MEPPlanarLateralBend
                     return Result.Cancelled;
                 }
 
-                debugInfo.AppendLine($"P2 方向点: ({sidePt.X:F3},{sidePt.Y:F3},{sidePt.Z:F3})");
-
                 // ---- 计算全局 frame ----
                 GlobalFrame frame = MEPLateralBendCalculator.ComputeGlobalFrame(
                     refCurve, breakPt, sidePt, offset_ft, angleDeg);
@@ -119,19 +112,9 @@ namespace MEPTools.MEPPlanarLateralBend
                 if (frame == null || !frame.IsValid)
                 {
                     string frameErr = frame?.ErrorMessage ?? "全局坐标系计算失败";
-                    message = frameErr;
-                    debugInfo.AppendLine($"✗ {frameErr}");
+                    InfoCenterTip.Show($"计算失败: {frameErr}");
                     return Result.Failed;
                 }
-
-                debugInfo.AppendLine($"参考方向 RefDir: ({frame.RefDir.X:F3},{frame.RefDir.Y:F3})");
-                debugInfo.AppendLine($"斜段方向 DiagDir: ({frame.DiagDir.X:F3},{frame.DiagDir.Y:F3})");
-                debugInfo.AppendLine($"P0 分布方向 P0LineDir: ({frame.P0LineDir.X:F3},{frame.P0LineDir.Y:F3})");
-                debugInfo.AppendLine(
-                    $"横向平移向量: ({frame.LateralVector.X:F3},{frame.LateralVector.Y:F3},{frame.LateralVector.Z:F3})");
-                debugInfo.AppendLine(
-                    $"平移侧: {(frame.AlongSign > 0 ? "下游" : "上游")}, " +
-                    $"横向: {(frame.LatSign > 0 ? "左拐" : "右拐")}");
 
                 MEPLateralBendService service = new MEPLateralBendService(debugInfo);
                 int successCount = 0, failCount = 0;
@@ -139,10 +122,8 @@ namespace MEPTools.MEPPlanarLateralBend
                 using (Transaction trans = new Transaction(doc, "平面拐弯"))
                 {
                     trans.Start();
-
                     foreach (ElementId eid in elemIdList)
                     {
-                        debugInfo.AppendLine($"\n--- 处理元素 (ID: {eid.IntegerValue}) ---");
                         try
                         {
                             bool ok = service.ProcessSingleElement(doc, eid, frame);
@@ -150,21 +131,17 @@ namespace MEPTools.MEPPlanarLateralBend
                         }
                         catch (Exception ex)
                         {
-                            debugInfo.AppendLine($"✗ 元素 {eid.IntegerValue} 处理失败：{ex.Message}");
-                            debugInfo.AppendLine("⚠ 单事务模式，已回滚所有更改");
+                            debugInfo.LogException($"元素 {eid.IntegerValue} 处理失败", ex);
                             trans.RollBack();
-                            ShowDebugInfo("处理中止",
-                                $"元素 {eid.IntegerValue} 处理失败，所有更改已回滚");
+                            InfoCenterTip.Show($"处理中止: 元素 {eid.IntegerValue} 失败，已回滚");
                             return Result.Failed;
                         }
                     }
-
                     trans.Commit();
                 }
 
                 debugInfo.AppendLine($"\n处理完成：成功 {successCount}，失败 {failCount}");
-                ShowDebugInfo("平面拐弯 - 批量处理完成",
-                    $"成功: {successCount}, 失败: {failCount}");
+                InfoCenterTip.Show($"平面拐弯完成: 成功 {successCount}, 失败 {failCount}");
                 return Result.Succeeded;
             }
             catch (Autodesk.Revit.Exceptions.OperationCanceledException)
@@ -175,9 +152,8 @@ namespace MEPTools.MEPPlanarLateralBend
             catch (Exception ex)
             {
                 message = ex.Message;
-                debugInfo.AppendLine($"异常：{ex.Message}");
-                debugInfo.AppendLine($"堆栈：{ex.StackTrace}");
-                ShowDebugInfo("操作失败", null);
+                debugInfo.LogException("全局异常", ex);
+                InfoCenterTip.Show($"操作失败: {ex.Message}");
                 return Result.Failed;
             }
             finally
@@ -186,21 +162,44 @@ namespace MEPTools.MEPPlanarLateralBend
             }
         }
 
-        private void ShowDebugInfo(string title, string mainInstruction)
+        /// <summary>
+        /// 兼容 Revit 2022+ 和旧版本的获取标记引用的方法
+        /// </summary>
+        private ICollection<ElementId> GetTaggedElementIds(IndependentTag tag)
         {
-            TaskDialog td = new TaskDialog(title);
-            td.MainInstruction = mainInstruction ?? string.Empty;
-            td.MainContent = debugInfo.GetFullText();
-            td.CommonButtons = TaskDialogCommonButtons.Ok;
-            td.Show();
+            try
+            {
+                // Revit 2022 及以上
+                var refs = tag.GetTaggedReferences();
+                return refs.Select(r => r.ElementId).ToList();
+            }
+            catch (Exception)
+            {
+                // 兜底兼容 Revit 2021 及以下
+                var linkIds = tag.GetTaggedElementIds();
+                if (linkIds == null) return new List<ElementId>();
+
+                var res = new List<ElementId>();
+                foreach (var linkId in linkIds)
+                {
+                    if (linkId.HostElementId != ElementId.InvalidElementId)
+                        res.Add(linkId.HostElementId);
+                    else if (linkId.LinkedElementId != ElementId.InvalidElementId)
+                        res.Add(linkId.LinkedElementId);
+                }
+                return res;
+            }
+        }
+
+        private bool IsValidMEPElement(Element elem)
+        {
+            if (elem == null) return false;
+            return elem is Pipe || elem is Duct || elem is CableTray;
         }
 
         private class MEPCurveSelectionFilter : ISelectionFilter
         {
-            public bool AllowElement(Element elem)
-            {
-                return elem is Pipe || elem is Duct || elem is CableTray;
-            }
+            public bool AllowElement(Element elem) => elem is Pipe || elem is Duct || elem is CableTray;
             public bool AllowReference(Reference reference, XYZ position) => true;
         }
     }
