@@ -178,7 +178,7 @@ namespace MEPTools.MEP3TeeConnect
                                       || Math.Abs(p.HeightA - p.HeightB) > 1e-6;
                     string sizeTag = isReducing
                         ? $"[异径 A={FmtSize(p.DiameterA, p.WidthA, p.HeightA)} / B={FmtSize(p.DiameterB, p.WidthB, p.HeightB)}，" +
-                          $"立管取大={FmtSize(p.Diameter, p.Width, p.Height)}]"
+                          $"立管={FmtSize(p.Diameter, p.Width, p.Height)}]"
                         : $"[等径 {FmtSize(p.DiameterA, p.WidthA, p.HeightA)}]";
 
                     log.AppendLine(
@@ -333,9 +333,11 @@ namespace MEPTools.MEP3TeeConnect
             p.HeightA = MEPTeeCalculator.GetHeight(elemA, p.ElemType);
             p.HeightB = MEPTeeCalculator.GetHeight(elemB, p.ElemType);
 
-            p.Diameter = MEPTeeCalculator.GetMaxDiameter(elemA, elemB, p.ElemType);
-            p.Width = MEPTeeCalculator.GetMaxWidth(elemA, elemB, p.ElemType);
-            p.Height = MEPTeeCalculator.GetMaxHeight(elemA, elemB, p.ElemType);
+            // ★ 修改点：为了让立管端看起来是“小管”，立管尺寸必须与支管 B 保持一致。
+            // 这样 Revit 调用 NewTeeFitting 时，会生成一个主管大、立管小的标准异径三通。
+            p.Diameter = p.DiameterB;
+            p.Width = p.WidthB;
+            p.Height = p.HeightB;
 
             string geomErr;
             XYZ crossPt;
@@ -358,18 +360,23 @@ namespace MEPTools.MEP3TeeConnect
 
             // 高差检查：不再强制阻断，仅作为警告记录，交由 Revit 自动判断管件匹配高度
             string hErr;
-            if (!MEPTeeCalculator.CheckHeightDifference(p.ZA, p.ZB, p.Diameter, out hErr))
+            if (!MEPTeeCalculator.CheckHeightDifference(p.ZA, p.ZB, p.DiameterA, out hErr))
             {
                 MEPLogger.Instance.AppendLine($"⚠ 提示（系统 {p.SystemName}）：{hErr}。交由 Revit 尝试自动连接。");
             }
 
+            // 管件附近检测降级为警告，不阻断流程
             string fitErr;
             if (!MEPTeeCalculator.CheckNearbyFitting(doc, crossPt, p.ZA, p.IdA, p.IdB, out fitErr))
-            { err = $"A 交叉点：{fitErr}"; return false; }
+            {
+                MEPLogger.Instance.AppendLine($"⚠ 提示（系统 {p.SystemName}）：A 交叉点 {fitErr}。交由 Revit 尝试自动连接。");
+            }
 
             XYZ bEndPt = new XYZ(crossPt.X, crossPt.Y, p.ZB);
             if (!MEPTeeCalculator.CheckNearbyFitting(doc, bEndPt, p.ZB, p.IdA, p.IdB, out fitErr))
-            { err = $"B 近端：{fitErr}"; return false; }
+            {
+                MEPLogger.Instance.AppendLine($"⚠ 提示（系统 {p.SystemName}）：B 近端 {fitErr}。交由 Revit 尝试自动连接。");
+            }
 
             return true;
         }

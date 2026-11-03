@@ -226,7 +226,10 @@ namespace MEPTools.MEP3TeeConnect
             return true;
         }
 
-        /// <summary>交点 ±100mm 内是否已有管件</summary>
+        /// <summary>
+        /// 交点 ±100mm 内是否已有管件。
+        /// 优化：仅检测同专业（水/风）管件，过滤掉电气等其他专业；并通过容差排除极靠近边界的误报。
+        /// </summary>
         public static bool CheckNearbyFitting(Document doc, XYZ planPt, double z,
             ElementId ignoreA, ElementId ignoreB, out string err)
         {
@@ -241,20 +244,27 @@ namespace MEPTools.MEP3TeeConnect
                 .WhereElementIsNotElementType()
                 .ToElements();
 
+            Element elemA = doc.GetElement(ignoreA);
+            TeeElementType typeA = GetTeeType(elemA);
+
             foreach (var el in col)
             {
                 if (el.Id == ignoreA || el.Id == ignoreB) continue;
                 if (!(el is FamilyInstance fi) || fi.Category == null) continue;
 
                 int cid = fi.Category.Id.IntegerValue;
-                if (cid == (int)BuiltInCategory.OST_PipeFitting ||
-                    cid == (int)BuiltInCategory.OST_DuctFitting ||
-                    cid == (int)BuiltInCategory.OST_PipeAccessory ||
-                    cid == (int)BuiltInCategory.OST_DuctAccessory)
-                {
-                    err = $"交点附近发现管件：{el.Id.IntegerValue} ({fi.Name})";
-                    return false;
-                }
+                bool isPipeFitting = (cid == (int)BuiltInCategory.OST_PipeFitting || cid == (int)BuiltInCategory.OST_PipeAccessory);
+                bool isDuctFitting = (cid == (int)BuiltInCategory.OST_DuctFitting || cid == (int)BuiltInCategory.OST_DuctAccessory);
+
+                // 过滤不匹配的专业，例如水系统不拦截电气或风管管件
+                if (typeA == TeeElementType.Pipe && !isPipeFitting) continue;
+                if (typeA == TeeElementType.Duct && !isDuctFitting) continue;
+                
+                // 如果既不是水管件也不是风管件（比如是电气设备），直接跳过
+                if (!isPipeFitting && !isDuctFitting) continue;
+
+                err = $"交点附近发现管件：{el.Id.IntegerValue} ({fi.Name})";
+                return false;
             }
             return true;
         }

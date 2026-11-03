@@ -17,15 +17,85 @@ namespace MEPTools.MEPPlanarConnector.Core
             var g = PlanarConnectorCalculator.ComputeCollinear(a, b);
             if (!g.IsValid) { _log.AppendLine("✗ " + g.ErrorMessage); return false; }
 
-            if (g.PA.DistanceTo(g.PB) < 1e-4) return true; // 已重合
+            // ==========================================
+            // 检测逻辑 1：类型与系统匹配检查 (防止水管连风管)
+            // ==========================================
+            MEPElementType typeA = PlanarConnectorCalculator.GetElementType(a);
+            MEPElementType typeB = PlanarConnectorCalculator.GetElementType(b);
+            if (typeA != typeB) { _log.AppendLine("✗ 跳过：元素类型不同"); return false; }
 
-            if (!MoveEndpointTo(doc, a, g.PA, g.PB))
+            if (typeA == MEPElementType.Pipe || typeA == MEPElementType.Duct)
             {
-                _log.AppendLine("✗ 延伸失败");
+                var sysA = PlanarConnectorCalculator.GetSystemTypeId(a, typeA);
+                var sysB = PlanarConnectorCalculator.GetSystemTypeId(b, typeB);
+                if (sysA != sysB) { _log.AppendLine("✗ 跳过：系统类型不一致"); return false; }
+            }
+
+            // 目标连接点设为 B 的端点 (把 A 挪过去)
+            XYZ targetPt = g.PB;
+
+            // 1. 如果端点未重合，先移动端点
+            if (g.PA.DistanceTo(targetPt) > 1e-4)
+            {
+                if (!MoveEndpointTo(doc, a, g.PA, targetPt))
+                {
+                    _log.AppendLine($"✗ 延伸/修剪失败: {a.Id} -> {b.Id}");
+                    return false;
+                }
+            }
+
+            // 2. 强制刷新文档，确保连接件位置更新
+            doc.Regenerate();
+
+            // 3. 获取两个元素在连接点处的 Connector
+            Connector ca = GetConnectorAtPoint(a, targetPt);
+            Connector cb = GetConnectorAtPoint(b, targetPt);
+
+            // 如果没找到，尝试寻找距离最近的两个未连接 Connector
+            if (ca == null || cb == null)
+            {
+                FindClosestConnectorPair(a, b, out ca, out cb, out double dist);
+                double tolFt = UnitUtils.ConvertToInternalUnits(10.0, UnitTypeId.Millimeters);
+                if (ca == null || cb == null || dist > tolFt)
+                {
+                    _log.AppendLine($"✗ 无法找到相邻的连接件: {a.Id} -> {b.Id} (距离: {dist * 304.8:F1}mm)");
+                    return false;
+                }
+            }
+
+            // ==========================================
+            // 检测逻辑 2：连接器状态与有效性检查
+            // ==========================================
+            if (ca.IsConnectedTo(cb))
+            {
+                _log.AppendLine($"✓ 已经是连接状态: {a.Id} -> {b.Id}");
+                return true;
+            }
+
+            if (ca.Domain != cb.Domain)
+            {
+                _log.AppendLine($"✗ 连接器领域(Domain)不一致: {ca.Domain} vs {cb.Domain}");
                 return false;
             }
-            _log.AppendLine($"✓ 共线连接成功: {a.Id} -> {b.Id}");
-            return true;
+
+            if (ca.IsConnected || cb.IsConnected)
+            {
+                _log.AppendLine($"⚠ 警告: 端点已被其他元素占用，尝试强制连接");
+                // 这里可以加入打断已有连接（BreakCurve）的逻辑，但通常我们直接尝试 ConnectTo，Revit会处理或抛出异常
+            }
+
+            // 4. 执行真正的物理连接
+            try
+            {
+                ca.ConnectTo(cb);
+                _log.AppendLine($"✓ 共线物理连接成功 (ConnectTo): {a.Id} -> {b.Id}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _log.AppendLine($"✗ 物理连接失败: {ex.Message}");
+                return false;
+            }
         }
 
         public bool ProcessCorner(Document doc, Element a, Element b)
@@ -54,7 +124,8 @@ namespace MEPTools.MEPPlanarConnector.Core
             }
 
             doc.Regenerate();
-            // 放弯头
+            
+            // 转角模式依然通过生成弯头来真实连接
             return TryCreateElbow(doc, a.Id, b.Id, g.P);
         }
 
