@@ -5,9 +5,6 @@ using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
 
-// 解决 Connector 命名冲突
-using Connector = Autodesk.Revit.DB.Connector;
-
 namespace MEPTools.MEPHighLowConnector
 {
     public enum MEPElementType { Pipe, Duct, CableTray, Unknown }
@@ -17,6 +14,7 @@ namespace MEPTools.MEPHighLowConnector
         public ElementId AId { get; set; }
         public ElementId BId { get; set; }
         public double Distance { get; set; }
+        public bool IsCollinear { get; set; } // 新增：记录该配对是否共线
     }
 
     public class PairGeometry
@@ -63,7 +61,7 @@ namespace MEPTools.MEPHighLowConnector
             da = da.Normalize();
             db = db.Normalize();
 
-            // 平行检查（角度容差约 0.57°）
+            // 平行检查（增加容差，允许极微小偏差）
             double cross = da.X * db.Y - da.Y * db.X;
             if (Math.Abs(cross) > 1e-2) { reason = "两管水平投影不平行"; return false; }
 
@@ -72,16 +70,18 @@ namespace MEPTools.MEPHighLowConnector
             XYZ sb = lb.GetEndPoint(0);
             XYZ ab = new XYZ(sb.X - sa.X, sb.Y - sa.Y, 0);
             double perpDist = Math.Abs(ab.X * da.Y - ab.Y * da.X);
-            double tol = UnitUtils.ConvertToInternalUnits(5.0, UnitTypeId.Millimeters);
+            
+            // 【核心修复】将容差从 5mm 放宽到 50mm，解决由于建模不对齐导致的误报
+            double tol = UnitUtils.ConvertToInternalUnits(50.0, UnitTypeId.Millimeters);
             if (perpDist > tol)
             {
-                reason = string.Format("两管水平投影偏移 {0:F2}mm（不共线）", perpDist * FtToMm);
+                reason = string.Format("两管水平投影偏移 {0:F2}mm（不共线，容差50mm）", perpDist * FtToMm);
                 return false;
             }
             return true;
         }
 
-        /// <summary>System Type 一致（Pipe/Duct 比较；CableTray 只验类型相同）</summary>
+        /// <summary>System Type 一致</summary>
         public static bool HasCompatibleSystemType(Element a, Element b, out string reason)
         {
             reason = null;
@@ -92,6 +92,10 @@ namespace MEPTools.MEPHighLowConnector
 
             ElementId sysA = GetSystemTypeId(a, ta);
             ElementId sysB = GetSystemTypeId(b, tb);
+            
+            // 如果获取不到系统类型（可能是全局或未设置），放行交给 Revit 底层连接器判断
+            if (sysA == ElementId.InvalidElementId || sysB == ElementId.InvalidElementId) return true;
+            
             if (sysA != sysB) { reason = "System Type 不一致"; return false; }
             return true;
         }
@@ -111,7 +115,11 @@ namespace MEPTools.MEPHighLowConnector
             return ElementId.InvalidElementId;
         }
 
-        /// <summary>贪心配对：按管中点水平距离最近优先</summary>
+        /// <summary>
+        /// 【核心修复】贪心配对：
+        /// 1. 优先匹配水平投影共线的元素；
+        /// 2. 其次按管中点水平距离最近优先。
+        /// </summary>
         public static List<ConnectorPair> MatchPairs(List<Element> aList, List<Element> bList)
         {
             var candidates = new List<ConnectorPair>();
@@ -127,8 +135,26 @@ namespace MEPTools.MEPHighLowConnector
                     if (lb == null) continue;
                     XYZ mb = (lb.GetEndPoint(0) + lb.GetEndPoint(1)) * 0.5;
 
+                    // 计算中点水平距离
                     double d = new XYZ(ma.X - mb.X, ma.Y - mb.Y, 0).GetLength();
-                    candidates.Add(new ConnectorPair { AId = a.Id, BId = b.Id, Distance = d });
+                    
+                    // 判断是否共线
+                    string reason;
+                    bool isCollinear = IsHorizontallyCollinear(a, b, out reason);
+
+                    // 如果不共线，加入极大的惩罚值（100000英尺），保证共线配对绝对排在前面
+                    if (!isCollinear)
+                    {
+                        d += 100000.0; 
+                    }
+
+                    candidates.Add(new ConnectorPair 
+                    { 
+                        AId = a.Id, 
+                        BId = b.Id, 
+                        Distance = d,
+                        IsCollinear = isCollinear 
+                    });
                 }
             }
 
@@ -169,12 +195,11 @@ namespace MEPTools.MEPHighLowConnector
             XYZ bNear = (b0.DistanceTo(aMid) < b1.DistanceTo(aMid)) ? b0 : b1;
             XYZ bFar  = (bNear.IsAlmostEqualTo(b0)) ? b1 : b0;
 
-            // A→B 水平方向（沿 B 组管轴、从 B近端指向 B远端）
+            // A→B 水平方向
             XYZ axisDir = new XYZ(bFar.X - bNear.X, bFar.Y - bNear.Y, 0);
             if (axisDir.GetLength() < 1e-9) { g.ErrorMessage = "方向无法确定"; return g; }
             axisDir = axisDir.Normalize();
 
-            // 确保 axisDir 指向"从 P_A 朝向 B 组"
             XYZ toB = new XYZ(bMid.X - pA.X, bMid.Y - pA.Y, 0);
             if (toB.DotProduct(axisDir) < 0) axisDir = -axisDir;
 

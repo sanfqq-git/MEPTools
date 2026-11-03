@@ -7,8 +7,8 @@ using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
+using MEPTools.Shared;
 
-// 解决 Connector 命名冲突
 using Connector = Autodesk.Revit.DB.Connector;
 
 namespace MEPTools.MEPHighLowConnector
@@ -17,6 +17,8 @@ namespace MEPTools.MEPHighLowConnector
     [Regeneration(RegenerationOption.Manual)]
     public class Command : IExternalCommand
     {
+        private const double DefaultAngleDeg = 45.0;
+
         public Result Execute(ExternalCommandData commandData,
             ref string message, ElementSet elements)
         {
@@ -28,59 +30,47 @@ namespace MEPTools.MEPHighLowConnector
 
             try
             {
-                // ---- 1. 读 A 组（预选）----
-                var aList = new List<ElementId>();
-                var selIds = uiDoc.Selection.GetElementIds();
-                if (selIds != null)
+                // ---- 1. A 组：有预选用预选，无预选提示用户拾取 ----
+                var aList = GetPreselectedCurves(uiDoc, doc);
+                if (aList.Count > 0)
                 {
-                    foreach (var id in selIds)
-                    {
-                        var e = doc.GetElement(id);
-                        if (e is Pipe || e is Duct || e is CableTray) aList.Add(id);
-                    }
+                    InfoCenterTip.Show($"已使用预选的 {aList.Count} 个 A 组元素");
+                    log.AppendLine($"A 组来自预选，数量：{aList.Count}");
                 }
+                else
+                {
+                    InfoCenterTip.Show("未检测到预选，请选择 A 组元素（按空格确认）");
+                    aList = PickCurves(uiDoc, "请选择 A 组元素（可框选多个，按空格确认）");
+                    log.AppendLine($"A 组为手动拾取，数量：{aList.Count}");
+                }
+
                 if (aList.Count < 1)
                 {
                     message = "请先选中至少 1 个 A 组元素（管道/风管/线槽）";
+                    InfoCenterTip.Show("未选择 A 组元素，已取消");
                     return Result.Failed;
                 }
-                log.AppendLine("A 组数量：" + aList.Count);
 
-                // ---- 2. 参数对话框 ----
-                var dlg = new ConnectorDialog(45.0);
-                if (dlg.ShowDialog() != true || !dlg.Confirmed)
+                // ---- 2. B 组：始终拾取（空格键确认） ----
+                InfoCenterTip.Show("请选择 B 组元素（按空格确认）");
+                var bList = PickCurves(uiDoc, "请选择 B 组元素（可框选多个，按空格确认）");
+                if (bList.Count < 1)
                 {
-                    message = "用户取消参数输入";
-                    return Result.Cancelled;
+                    message = "用户取消 B 组拾取";
+                    InfoCenterTip.Show("未选择 B 组元素，已取消");
+                    return Result.Failed;
                 }
-                double thetaDeg = dlg.AngleDeg;
-                log.AppendLine("角度 θ = " + thetaDeg.ToString("F1") + "°");
+                log.AppendLine($"B 组数量：{bList.Count}");
 
-                // ---- 3. 拾取 B 组 ----
-                IList<Reference> refs;
-                try
-                {
-                    refs = uiDoc.Selection.PickObjects(
-                        ObjectType.Element,
-                        new MEPCurveSelectionFilter(),
-                        "请选取 B 组元素（可框选多个）");
-                }
-                catch (Autodesk.Revit.Exceptions.OperationCanceledException)
-                {
-                    return Result.Cancelled;
-                }
-                var bList = new List<ElementId>();
-                foreach (var r in refs) bList.Add(r.ElementId);
-                log.AppendLine("B 组数量：" + bList.Count);
-
-                // ---- 4. 数量校验 ----
+                // ---- 3. 数量校验 ----
                 if (aList.Count != bList.Count)
                 {
                     message = string.Format("A 组 ({0}) 与 B 组 ({1}) 数量不一致", aList.Count, bList.Count);
+                    InfoCenterTip.Show($"数量不一致：A组 {aList.Count}，B组 {bList.Count}");
                     return Result.Failed;
                 }
 
-                // ---- 5. 配对 ----
+                // ---- 4. 配对 ----
                 var aElems = new List<Element>();
                 foreach (var id in aList) aElems.Add(doc.GetElement(id));
                 var bElems = new List<Element>();
@@ -88,7 +78,7 @@ namespace MEPTools.MEPHighLowConnector
 
                 var pairs = MEPConnectorCalculator.MatchPairs(aElems, bElems);
 
-                // ---- 6. 逐对校验 ----
+                // ---- 5. 逐对校验 ----
                 int idx = 0;
                 foreach (var p in pairs)
                 {
@@ -103,17 +93,22 @@ namespace MEPTools.MEPHighLowConnector
                     if (!MEPConnectorCalculator.IsHorizontallyCollinear(a, b, out reason))
                     {
                         message = string.Format("配对 {0} 共线校验失败：{1}", idx, reason);
+                        InfoCenterTip.Show("共线校验失败：" + reason);
                         return Result.Failed;
                     }
                     if (!MEPConnectorCalculator.HasCompatibleSystemType(a, b, out reason))
                     {
                         message = string.Format("配对 {0} 系统类型校验失败：{1}", idx, reason);
+                        InfoCenterTip.Show("系统类型校验失败：" + reason);
                         return Result.Failed;
                     }
                 }
                 log.AppendLine("\n所有配对通过共线/系统类型校验");
 
-                // ---- 7. 处理 ----
+                // ---- 6. 处理 ----
+                InfoCenterTip.Show($"开始处理 {pairs.Count} 对连接（角度 {DefaultAngleDeg:F0}°）");
+                log.AppendLine("角度 θ = " + DefaultAngleDeg.ToString("F1") + "°");
+
                 int success = 0, fail = 0;
                 using (var tx = new Transaction(doc, "连接两组 MEP"))
                 {
@@ -123,7 +118,7 @@ namespace MEPTools.MEPHighLowConnector
                     {
                         try
                         {
-                            if (svc.ProcessPair(doc, p.AId, p.BId, thetaDeg)) success++;
+                            if (svc.ProcessPair(doc, p.AId, p.BId, DefaultAngleDeg)) success++;
                             else fail++;
                         }
                         catch (Exception ex)
@@ -137,23 +132,29 @@ namespace MEPTools.MEPHighLowConnector
                 }
 
                 log.AppendLine(string.Format("\n完成：成功 {0}, 失败 {1}", success, fail));
+                InfoCenterTip.Show($"MEP 连接完成：成功 {success}，失败 {fail}");
 
-                var td = new TaskDialog("MEP 连接");
-                td.MainInstruction = string.Format("处理完成：成功 {0}, 失败 {1}", success, fail);
-                td.MainContent = log.GetFullText();
-                td.CommonButtons = TaskDialogCommonButtons.Ok;
-                td.Show();
+                if (success == 0 && fail > 0)
+                {
+                    var td = new TaskDialog("MEP 连接失败");
+                    td.MainInstruction = string.Format("处理完成：成功 {0}, 失败 {1}", success, fail);
+                    td.MainContent = log.GetFullText();
+                    td.CommonButtons = TaskDialogCommonButtons.Ok;
+                    td.Show();
+                }
 
                 return success > 0 ? Result.Succeeded : Result.Failed;
             }
             catch (Autodesk.Revit.Exceptions.OperationCanceledException)
             {
+                InfoCenterTip.Show("操作已取消");
                 return Result.Cancelled;
             }
             catch (Exception ex)
             {
                 message = ex.Message;
                 log.LogException("Execute", ex);
+                InfoCenterTip.Show("执行异常：" + ex.Message);
                 return Result.Failed;
             }
             finally
@@ -161,12 +162,42 @@ namespace MEPTools.MEPHighLowConnector
                 MEPLogger.Instance.EndSession("完成");
             }
         }
+
+        private static List<ElementId> GetPreselectedCurves(UIDocument uiDoc, Document doc)
+        {
+            var list = new List<ElementId>();
+            var selIds = uiDoc.Selection.GetElementIds();
+            if (selIds == null) return list;
+            foreach (var id in selIds)
+            {
+                var e = doc.GetElement(id);
+                if (e is Pipe || e is Duct || e is CableTray) list.Add(id);
+            }
+            return list;
+        }
+
+        private static List<ElementId> PickCurves(UIDocument uiDoc, string prompt)
+        {
+            var list = new List<ElementId>();
+            try
+            {
+                using (var finisher = new SpaceKeyFinisher(System.Windows.Forms.Keys.Space, "完成", "Finish"))
+                {
+                    finisher.Enable();
+                    var refs = uiDoc.Selection.PickObjects(ObjectType.Element, new MEPCurveSelectionFilter(), prompt);
+                    if (refs != null)
+                        foreach (var r in refs) list.Add(r.ElementId);
+                }
+            }
+            catch (Autodesk.Revit.Exceptions.OperationCanceledException) { }
+            catch (Exception ex) { MEPLogger.Instance.LogException("PickCurves", ex); }
+            return list;
+        }
     }
 
     public class MEPCurveSelectionFilter : ISelectionFilter
     {
-        public bool AllowElement(Element e)
-        { return e is Pipe || e is Duct || e is CableTray; }
+        public bool AllowElement(Element e) { return e is Pipe || e is Duct || e is CableTray; }
         public bool AllowReference(Reference r, XYZ position) { return true; }
     }
 }

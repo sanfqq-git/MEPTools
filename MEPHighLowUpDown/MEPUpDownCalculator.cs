@@ -7,54 +7,29 @@ using Connector = Autodesk.Revit.DB.Connector;
 
 namespace MEPTools.MEPHighLowUpDown
 {
-    /// <summary>MEP 管线类型</summary>
-    public enum MEPElementType
-    {
-        Pipe,
-        Duct,
-        CableTray,
-        Unknown
-    }
+    public enum MEPElementType { Pipe, Duct, CableTray, Unknown }
 
-    /// <summary>45° 单侧抬升/下降几何数据</summary>
     public class UpDownGeometry
     {
-        /// <summary>打断点（原始高度侧）</summary>
         public XYZ P0 { get; set; }
-        /// <summary>斜段另一端（新高度侧）</summary>
         public XYZ P1 { get; set; }
-        /// <summary>管线方向（沿曲线从起点到终点）</summary>
         public XYZ Dir { get; set; }
-        /// <summary>带符号高度偏移（ft）</summary>
         public double Offset { get; set; }
-        /// <summary>true = 沿 dir 方向的一侧被抬升/下降</summary>
         public bool LiftRight { get; set; }
-
-        /// <summary>打断点到曲线起点沿管距离（ft）</summary>
         public double DistFromStart { get; set; }
-        /// <summary>打断点到曲线终点沿管距离（ft）</summary>
         public double DistToEnd { get; set; }
-        /// <summary>升降侧可用空间（ft）</summary>
         public double AvailableSpace { get; set; }
-
         public bool IsValid { get; set; }
         public string ErrorMessage { get; set; }
     }
 
-    /// <summary>45° 抬升/下降几何计算器（无状态）</summary>
     public static class MEPUpDownCalculator
     {
-        /// <summary>弯头内角允许范围（度）</summary>
         public const double ElbowAngleMin = 2.0;
         public const double ElbowAngleMax = 95.0;
-
-        /// <summary>英尺 → 毫米</summary>
         public const double FtToMm = 304.8;
-
-        /// <summary>最小过渡长度（ft）</summary>
         public const double MinTransitionLength = 0.0001;
 
-        /// <summary>判断元素类型</summary>
         public static MEPElementType GetElementType(Element elem)
         {
             if (elem is Pipe) return MEPElementType.Pipe;
@@ -63,12 +38,6 @@ namespace MEPTools.MEPHighLowUpDown
             return MEPElementType.Unknown;
         }
 
-        /// <summary>
-        /// 计算 45° 单侧抬升/下降几何：
-        /// - 打断点 P0 位于原始高度
-        /// - 过渡段沿管线方向水平投影长度 = |h_offset|
-        /// - 过渡段另一端 P1 位于新高度
-        /// </summary>
         public static UpDownGeometry ComputeLift(Curve curve, XYZ breakPt, XYZ sidePt,
             double h_offset_ft, out string errorMsg)
         {
@@ -81,17 +50,17 @@ namespace MEPTools.MEPHighLowUpDown
                 return result;
             }
 
+            // 仅投影打断点（因为打断点必须在管线上）
             IntersectionResult proj1 = curve.Project(breakPt);
-            IntersectionResult proj2 = curve.Project(sidePt);
-            if (proj1 == null || proj2 == null)
+            if (proj1 == null)
             {
-                errorMsg = "点位投影失败（拾取点不在管线上）";
+                errorMsg = "打断点投影失败（拾取点不在管线上）";
                 return result;
             }
 
             XYZ p0 = proj1.XYZPoint;
 
-            // ---------- 计算曲线方向 ----------
+            // 计算曲线方向
             XYZ dir;
             if (curve is Line line)
             {
@@ -109,24 +78,20 @@ namespace MEPTools.MEPHighLowUpDown
                 dir = tangent.Normalize();
             }
 
-            XYZ sideProj = proj2.XYZPoint;
-            // 升降侧判定：点击侧相对打断点的方向
-            bool liftRight = (sideProj - p0).DotProduct(dir) >= 0;
+            // ★ 升降侧判定：直接用点击的空间点与打断点的相对位置，不再需要投影到曲线上
+            // 如果方向向量的点积 >= 0，说明点在沿管线的正方向上（右侧），反之左侧
+            bool liftRight = (sidePt - p0).DotProduct(dir) >= 0;
 
             double absH = Math.Abs(h_offset_ft);
             double sign = liftRight ? 1.0 : -1.0;
 
-            // ---------- 用向量点积直接计算沿管距离 ----------
             XYZ curveStart = curve.GetEndPoint(0);
             XYZ curveEnd = curve.GetEndPoint(1);
 
             double distFromStart = (p0 - curveStart).DotProduct(dir);
             double distToEnd = (curveEnd - p0).DotProduct(dir);
 
-            // 容差 0.5mm
             double tolFt = UnitUtils.ConvertToInternalUnits(0.5, UnitTypeId.Millimeters);
-
-            // 升降侧需要预留的空间
             double availableSpace = liftRight ? distToEnd : distFromStart;
 
             result.DistFromStart = distFromStart;
@@ -139,14 +104,12 @@ namespace MEPTools.MEPHighLowUpDown
                     $"打断点距离升降侧端点空间不足：\n" +
                     $"  需要 = {absH * FtToMm:F1} mm\n" +
                     $"  可用 = {availableSpace * FtToMm:F1} mm\n" +
-                    $"  (打断点距起点 {distFromStart * FtToMm:F1} mm, " +
-                    $"距终点 {distToEnd * FtToMm:F1} mm)\n" +
-                    $"  建议：减小偏移量至 ≤ {availableSpace * FtToMm:F1} mm，" +
-                    $"或将打断点向升降侧端点方向移动";
+                    $"  (打断点距起点 {distFromStart * FtToMm:F1} mm, 距终点 {distToEnd * FtToMm:F1} mm)\n" +
+                    $"  建议：减小偏移量至 ≤ {availableSpace * FtToMm:F1} mm，或将打断点向升降侧端点方向移动";
                 return result;
             }
 
-            // P1 = P0 + dir*sign*|h| + Z*h  （45° 斜段端点）
+            // P1 = P0 + dir*sign*|h| + Z*h
             XYZ p1 = p0 + dir * (sign * absH) + XYZ.BasisZ * h_offset_ft;
 
             double transLen = (p1 - p0).GetLength();
@@ -165,21 +128,17 @@ namespace MEPTools.MEPHighLowUpDown
             return result;
         }
 
-        /// <summary>根据两个连接器朝向计算弯头内角（度）</summary>
         public static double CalcElbowAngleDeg(Connector c1, Connector c2)
         {
-            double outerDeg = c1.CoordinateSystem.BasisZ
-                .AngleTo(c2.CoordinateSystem.BasisZ) * 180.0 / Math.PI;
+            double outerDeg = c1.CoordinateSystem.BasisZ.AngleTo(c2.CoordinateSystem.BasisZ) * 180.0 / Math.PI;
             return 180.0 - outerDeg;
         }
 
-        /// <summary>弯头角度是否在允许范围内</summary>
         public static bool IsElbowAngleValid(double elbowDeg)
         {
             return elbowDeg >= ElbowAngleMin && elbowDeg <= ElbowAngleMax;
         }
 
-        /// <summary>格式化 XYZ 点用于日志</summary>
         public static string Fmt(XYZ p)
         {
             return p == null ? "null" : $"({p.X:F3},{p.Y:F3},{p.Z:F3})";

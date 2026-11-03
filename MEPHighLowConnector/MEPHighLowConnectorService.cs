@@ -5,8 +5,8 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
+using MEPTools.Shared;
 
-// 解决 Connector 命名冲突
 using Connector = Autodesk.Revit.DB.Connector;
 
 namespace MEPTools.MEPHighLowConnector
@@ -116,8 +116,13 @@ namespace MEPTools.MEPHighLowConnector
             if (bNear.IsAlmostEqualTo(b0)) { newStart = g.PB; newEnd = bFar; }
             else { newStart = bFar; newEnd = g.PB; }
 
-            if (newStart.DistanceTo(newEnd) < 1e-4)
-            { _log.AppendLine("✗ 修改后 B 组管长度为零"); return false; }
+            // 【保护机制】防止修改后 B 管长度过短（小于 10mm）导致 Revit 抛出异常
+            double minLength = UnitUtils.ConvertToInternalUnits(10.0, UnitTypeId.Millimeters);
+            if (newStart.DistanceTo(newEnd) < minLength)
+            { 
+                _log.AppendLine("✗ 修改后 B 组管长度过短，易导致崩溃"); 
+                return false; 
+            }
 
             try
             {

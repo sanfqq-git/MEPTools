@@ -7,6 +7,7 @@ using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
+using MEPTools.Shared;
 
 namespace MEPTools.MEP3TeeCrossConnect
 {
@@ -14,55 +15,118 @@ namespace MEPTools.MEP3TeeCrossConnect
     [Regeneration(RegenerationOption.Manual)]
     public class Command : IExternalCommand
     {
-        private readonly StringBuilder debugInfo = new StringBuilder();
-
         public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
         {
             UIApplication uiapp = commandData.Application;
             UIDocument uidoc = uiapp.ActiveUIDocument;
             Document doc = uidoc.Document;
+            MEPLogger log = MEPLogger.Instance;
 
             try
             {
-                // ---------- 1. 预选 A 组 ----------
-                ICollection<ElementId> preSelected = uidoc.Selection.GetElementIds();
-                if (preSelected == null || preSelected.Count == 0)
-                {
-                    message = "请先选中第一组管（Pipe 或 Duct）";
-                    return Result.Failed;
-                }
+                log.StartSession("MEP 自动交叉连接");
 
+                // ============================================================
+                // 1. A 组：优先使用预选，否则让用户 PickObjects（空格确认）
+                // ============================================================
                 CrossElementType commonType = CrossElementType.Unknown;
                 List<ElementId> groupA = new List<ElementId>();
-                foreach (ElementId id in preSelected)
+                ICollection<ElementId> preSelected = uidoc.Selection.GetElementIds();
+                bool hasPreSelection = false;
+
+                if (preSelected != null && preSelected.Count > 0)
                 {
-                    Element e = doc.GetElement(id);
-                    CrossElementType t = MEPCrossCalculator.GetCrossType(e);
-                    if (t == CrossElementType.Unknown) continue;
-                    if (commonType == CrossElementType.Unknown) commonType = t;
-                    if (t != commonType) continue;
-                    groupA.Add(id);
-                }
-                if (groupA.Count == 0)
-                {
-                    message = "第一组中未包含有效的 Pipe 或 Duct 元素（且必须同类型）";
-                    return Result.Failed;
+                    CrossElementType tmpType = CrossElementType.Unknown;
+                    List<ElementId> tmp = new List<ElementId>();
+                    foreach (ElementId id in preSelected)
+                    {
+                        Element e = doc.GetElement(id);
+                        CrossElementType t = MEPCrossCalculator.GetCrossType(e);
+                        if (t == CrossElementType.Unknown) continue;
+                        if (tmpType == CrossElementType.Unknown) tmpType = t;
+                        if (t != tmpType) continue;
+                        tmp.Add(id);
+                    }
+                    if (tmp.Count > 0)
+                    {
+                        groupA = tmp;
+                        commonType = tmpType;
+                        hasPreSelection = true;
+                        log.AppendLine($"✓ 预选 A 组：{groupA.Count} 个元素，类型 = {commonType}");
+                        InfoCenterTip.Show($"已识别预选 A 组 {groupA.Count} 个（{commonType}）");
+                    }
                 }
 
-                debugInfo.AppendLine($"A 组：{groupA.Count} 个元素，类型 = {commonType}");
+                if (!hasPreSelection)
+                {
+                    log.AppendLine("未检测到有效预选 → 进入 A 组交互选择");
+                    InfoCenterTip.Show("请选择 A 组 MEP 管（Pipe/Duct），按空格完成");
 
-                // ---------- 2. B 组 PickObjects ----------
+                    IList<Reference> aRefs;
+                    try
+                    {
+                        using (var finisher = new SpaceKeyFinisher())
+                        {
+                            finisher.Enable();
+                            aRefs = uidoc.Selection.PickObjects(
+                                ObjectType.Element,
+                                new AnyMEPCurveFilter(),
+                                "请选择 A 组（Pipe/Duct，需同类型），选完按空格完成");
+                        }
+                    }
+                    catch (Autodesk.Revit.Exceptions.OperationCanceledException)
+                    {
+                        log.AppendLine("用户取消了 A 组选择");
+                        log.EndSession("取消");
+                        InfoCenterTip.Show("已取消");
+                        return Result.Cancelled;
+                    }
+
+                    foreach (Reference r in aRefs)
+                    {
+                        Element e = doc.GetElement(r.ElementId);
+                        CrossElementType t = MEPCrossCalculator.GetCrossType(e);
+                        if (t == CrossElementType.Unknown) continue;
+                        if (commonType == CrossElementType.Unknown) commonType = t;
+                        if (t != commonType)
+                        {
+                            log.AppendLine($"⚠ A 组 {r.ElementId.IntegerValue} 类型 {t} 与 {commonType} 不一致，已跳过");
+                            continue;
+                        }
+                        groupA.Add(r.ElementId);
+                    }
+
+                    if (groupA.Count == 0)
+                    {
+                        log.EndSession("A 组无有效元素");
+                        InfoCenterTip.Show("A 组未包含有效的 Pipe 或 Duct");
+                        return Result.Failed;
+                    }
+                    log.AppendLine($"✓ A 组：{groupA.Count} 个元素，类型 = {commonType}");
+                }
+
+                // ============================================================
+                // 2. B 组 PickObjects（空格确认）
+                // ============================================================
+                InfoCenterTip.Show($"请选择 B 组（{commonType}，需 {groupA.Count} 个），按空格完成");
+
                 IList<Reference> bRefs;
                 try
                 {
-                    bRefs = uidoc.Selection.PickObjects(
-                        ObjectType.Element,
-                        new CrossSelectionFilter(commonType),
-                        $"请选择第二组（{commonType}）管（数量需为 {groupA.Count}），选完按完成/ESC");
+                    using (var finisher = new SpaceKeyFinisher())
+                    {
+                        finisher.Enable();
+                        bRefs = uidoc.Selection.PickObjects(
+                            ObjectType.Element,
+                            new CrossSelectionFilter(commonType),
+                            $"请选择 B 组（{commonType}，数量需为 {groupA.Count}），选完按空格完成");
+                    }
                 }
                 catch (Autodesk.Revit.Exceptions.OperationCanceledException)
                 {
-                    debugInfo.AppendLine("用户取消了 B 组选择");
+                    log.AppendLine("用户取消了 B 组选择");
+                    log.EndSession("取消");
+                    InfoCenterTip.Show("已取消");
                     return Result.Cancelled;
                 }
 
@@ -71,34 +135,43 @@ namespace MEPTools.MEP3TeeCrossConnect
 
                 if (groupB.Count != groupA.Count)
                 {
-                    message = $"两组数量不一致：A={groupA.Count}，B={groupB.Count}";
+                    string err = $"两组数量不一致：A={groupA.Count}，B={groupB.Count}";
+                    log.AppendLine(err);
+                    log.EndSession(err);
+                    InfoCenterTip.Show(err);
                     return Result.Failed;
                 }
-                debugInfo.AppendLine($"B 组：{groupB.Count} 个元素");
+                log.AppendLine($"✓ B 组：{groupB.Count} 个元素");
 
-                // ---------- 3. 按系统配对 ----------
+                // ============================================================
+                // 3. 按系统配对
+                // ============================================================
                 string pairErr;
                 List<CrossPair> pairs = PairBySystem(doc, groupA, groupB, commonType, out pairErr);
                 if (pairs == null)
                 {
-                    message = pairErr;
+                    log.AppendLine(pairErr);
+                    log.EndSession(pairErr);
+                    InfoCenterTip.Show(pairErr);
                     return Result.Failed;
                 }
-                debugInfo.AppendLine($"系统配对：{pairs.Count} 对");
+                log.AppendLine($"系统配对：{pairs.Count} 对");
 
-                // ---------- 4. 几何计算（无副作用；所有校验仅提示，不阻断） ----------
+                // ============================================================
+                // 4. 几何计算（无副作用；放宽校验，仅提示不阻断）
+                // ============================================================
                 foreach (CrossPair p in pairs)
                 {
                     string geomErr;
                     if (!BuildPairGeometry(doc, p, out geomErr))
                     {
-                        // 只有「无法计算交点」「形状不一致」「缺系统类型」这类硬性失败才在此返回
-                        message = $"配对失败（系统 {p.SystemName}）：{geomErr}";
-                        debugInfo.AppendLine($"✗ {message}");
-                        ShowDebugInfo("几何校验失败", message);
+                        string err = $"配对失败（系统 {p.SystemName}）：{geomErr}";
+                        log.AppendLine($"✗ {err}");
+                        log.EndSession(err);
+                        InfoCenterTip.Show(err);
                         return Result.Failed;
                     }
-                    debugInfo.AppendLine(
+                    log.AppendLine(
                         $"✓ 系统 {p.SystemName}：高 ID={p.HighId.IntegerValue}，低 ID={p.LowId.IntegerValue}，" +
                         $"交点=({p.CrossPoint.X:F3},{p.CrossPoint.Y:F3})，" +
                         $"高差={(p.HighZ - p.LowZ) * MEPCrossCalculator.FtToMm:F1}mm，" +
@@ -109,46 +182,54 @@ namespace MEPTools.MEP3TeeCrossConnect
                         $"{p.Height * MEPCrossCalculator.FtToMm:F1})mm");
                 }
 
-                // ---------- 5. 单事务执行 ----------
+                // ============================================================
+                // 5. 单事务执行
+                // ============================================================
                 int success = 0;
                 using (Transaction trans = new Transaction(doc, "MEP 自动交叉连接"))
                 {
                     trans.Start();
                     try
                     {
-                        MEPCrossService service = new MEPCrossService(debugInfo);
+                        StringBuilder svcLog = new StringBuilder();
+                        MEPCrossService service = new MEPCrossService(svcLog);
                         foreach (CrossPair p in pairs)
                         {
-                            debugInfo.AppendLine($"\n--- 处理系统 {p.SystemName} ---");
+                            log.AppendLine($"\n--- 处理系统 {p.SystemName} ---");
                             service.ProcessPair(doc, p);
                             success++;
                         }
+                        if (svcLog.Length > 0) log.AppendLine(svcLog.ToString());
                         trans.Commit();
                     }
                     catch (Exception ex)
                     {
-                        debugInfo.AppendLine($"✗ 执行失败：{ex.Message}");
-                        debugInfo.AppendLine("⚠ 单事务模式，已回滚所有更改");
+                        log.AppendLine($"✗ 执行失败：{ex.Message}");
+                        log.LogException("ProcessPair", ex);
+                        log.AppendLine("⚠ 单事务模式，已回滚所有更改");
                         trans.RollBack();
-                        ShowDebugInfo("执行失败（已回滚）", ex.Message);
+                        log.EndSession("失败（已回滚）");
+                        InfoCenterTip.Show($"✗ 执行失败：{ex.Message}");
                         return Result.Failed;
                     }
                 }
 
-                ShowDebugInfo("MEP 自动交叉连接", $"成功连接 {success} 对");
+                log.EndSession($"成功 {success} 对");
+                InfoCenterTip.Show($"✓ MEP 自动交叉连接完成，成功 {success} 对");
                 return Result.Succeeded;
             }
             catch (Autodesk.Revit.Exceptions.OperationCanceledException)
             {
-                debugInfo.AppendLine("用户取消了操作");
+                log.AppendLine("用户取消了操作");
+                log.EndSession("取消");
                 return Result.Cancelled;
             }
             catch (Exception ex)
             {
                 message = ex.Message;
-                debugInfo.AppendLine($"异常：{ex.Message}");
-                debugInfo.AppendLine($"堆栈：{ex.StackTrace}");
-                ShowDebugInfo("操作失败", null);
+                log.LogException("Command.Execute", ex);
+                log.EndSession("异常");
+                InfoCenterTip.Show($"✗ 操作失败：{ex.Message}");
                 return Result.Failed;
             }
         }
@@ -205,7 +286,7 @@ namespace MEPTools.MEP3TeeCrossConnect
                 string name = MEPCrossCalculator.GetSystemName(doc, e, type);
                 if (string.IsNullOrEmpty(name))
                 {
-                    debugInfo.AppendLine($"⚠ 元素 {id.IntegerValue} 无系统名称，跳过");
+                    MEPLogger.Instance.AppendLine($"⚠ 元素 {id.IntegerValue} 无系统名称，跳过");
                     continue;
                 }
                 if (!dict.ContainsKey(name)) dict[name] = new List<ElementId>();
@@ -216,8 +297,6 @@ namespace MEPTools.MEP3TeeCrossConnect
 
         // =====================================================================
         // 判高/低 + 交点 + 尺寸读取
-        // 【放宽策略】只保留「能否计算」的硬性判据（形状不一致 / 无交点 / 缺系统类型），
-        //             端点距离、高差、管件占用等全部降级为「仅提示」。
         // =====================================================================
         private bool BuildPairGeometry(Document doc, CrossPair p, out string err)
         {
@@ -239,7 +318,7 @@ namespace MEPTools.MEP3TeeCrossConnect
             p.SystemTypeId = MEPCrossCalculator.GetSystemTypeId(highElem, p.ElemType);
             if (p.SystemTypeId == ElementId.InvalidElementId) { err = "系统类型无效"; return false; }
 
-            // -------- 硬性：形状一致性（圆/矩混连无对应三通族，无法创建） --------
+            // -------- 硬性：形状一致性 --------
             bool rectHigh = MEPCrossCalculator.IsRectangular(highElem, p.ElemType);
             bool rectLow = MEPCrossCalculator.IsRectangular(lowElem, p.ElemType);
             if (rectHigh != rectLow)
@@ -248,11 +327,11 @@ namespace MEPTools.MEP3TeeCrossConnect
                 return false;
             }
 
-            // -------- 尺寸读取（允许变径，取较大值作为立管尺寸） --------
+            // -------- 尺寸读取（允许变径，取较大值） --------
             p.DiameterHigh = MEPCrossCalculator.GetDiameter(highElem, p.ElemType);
             p.DiameterLow = MEPCrossCalculator.GetDiameter(lowElem, p.ElemType);
 
-            double effectiveDia; // 仅用于日志提示
+            double effectiveDia; 
             if (p.ElemType == CrossElementType.Pipe || !rectHigh)
             {
                 p.Diameter = Math.Max(p.DiameterHigh, p.DiameterLow);
@@ -276,7 +355,7 @@ namespace MEPTools.MEP3TeeCrossConnect
             string sizeInfo;
             if (!MEPCrossCalculator.AreEqualSize(highElem, lowElem, p.ElemType, out sizeInfo))
             {
-                debugInfo.AppendLine($"⚠ 尺寸不一致（允许变径连接）：{sizeInfo}");
+                MEPLogger.Instance.AppendLine($"⚠ 尺寸不一致（允许变径连接）：{sizeInfo}");
             }
 
             // -------- 硬性：平面交点必须存在 --------
@@ -287,21 +366,23 @@ namespace MEPTools.MEP3TeeCrossConnect
             // -------- 端点距离（仅提示，不阻断） --------
             string endErr;
             if (!MEPCrossCalculator.CheckEndDistance(highElem, planPt, out endErr))
-                debugInfo.AppendLine($"⚠ 高组管：{endErr}（已放宽，继续执行）");
+                MEPLogger.Instance.AppendLine($"⚠ 高组管：{endErr}（已放宽，继续执行）");
             if (!MEPCrossCalculator.CheckEndDistance(lowElem, planPt, out endErr))
-                debugInfo.AppendLine($"⚠ 低组管：{endErr}（已放宽，继续执行）");
+                MEPLogger.Instance.AppendLine($"⚠ 低组管：{endErr}（已放宽，继续执行）");
 
-            // -------- 高差（仅提示，不阻断） --------
+            // -------- 高差（仅提示，不阻断，交由 Revit 自动判断） --------
             string hErr;
             if (!MEPCrossCalculator.CheckHeightDifference(p.HighZ, p.LowZ, effectiveDia, out hErr))
-                debugInfo.AppendLine($"⚠ {hErr}（已放宽，继续执行）");
+            {
+                MEPLogger.Instance.AppendLine($"⚠ {hErr}（已放宽交由 Revit 判断，继续执行）");
+            }
 
             // -------- 已有管件（仅提示，不阻断） --------
             string fitErr;
             if (!MEPCrossCalculator.CheckNearbyFitting(doc, planPt, p.HighZ, p.HighId, p.LowId, out fitErr))
-                debugInfo.AppendLine($"⚠ 高组交叉点：{fitErr}（已放宽，继续执行）");
+                MEPLogger.Instance.AppendLine($"⚠ 高组交叉点：{fitErr}（已放宽，继续执行）");
             if (!MEPCrossCalculator.CheckNearbyFitting(doc, planPt, p.LowZ, p.HighId, p.LowId, out fitErr))
-                debugInfo.AppendLine($"⚠ 低组交叉点：{fitErr}（已放宽，继续执行）");
+                MEPLogger.Instance.AppendLine($"⚠ 低组交叉点：{fitErr}（已放宽，继续执行）");
 
             // -------- 高组 type / level（硬性：创建立管/三通必需） --------
             p.HighTypeId = highElem.GetTypeId();
@@ -318,15 +399,12 @@ namespace MEPTools.MEP3TeeCrossConnect
         }
 
         // =====================================================================
-        // 辅助
+        // 选择过滤器
         // =====================================================================
-        private void ShowDebugInfo(string title, string mainInstruction)
+        private class AnyMEPCurveFilter : ISelectionFilter
         {
-            TaskDialog td = new TaskDialog(title);
-            td.MainInstruction = mainInstruction ?? string.Empty;
-            td.MainContent = debugInfo.ToString();
-            td.CommonButtons = TaskDialogCommonButtons.Ok;
-            td.Show();
+            public bool AllowElement(Element e) => e is Pipe || e is Duct;
+            public bool AllowReference(Reference r, XYZ p) => true;
         }
 
         private class CrossSelectionFilter : ISelectionFilter
