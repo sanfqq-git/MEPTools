@@ -11,48 +11,29 @@ namespace MEPTools.MEPPlanarLateralBend
     /// <summary>全局参考坐标系（由参考管 + P1 + P2 + θ 唯一确定）</summary>
     public class GlobalFrame
     {
-        /// <summary>用户拾取的打断点（投影到参考管中轴线）</summary>
         public XYZ P1 { get; set; }
-        /// <summary>参考方向 = 参考管在 P1 处的水平切线</summary>
         public XYZ RefDir { get; set; }
-        /// <summary>左侧方向 = Z × RefDir</summary>
         public XYZ PerpLeft { get; set; }
-        /// <summary>沿管方向（指向平移侧）= sAlong × RefDir</summary>
         public XYZ AlongDir { get; set; }
-        /// <summary>横向方向（指向拐弯侧）= sLat × PerpLeft</summary>
         public XYZ LatDir { get; set; }
-        /// <summary>斜段方向（取决于 θ：θ=45° 时为 45° 斜；θ=90° 时为纯横向）</summary>
         public XYZ DiagDir { get; set; }
-        /// <summary>P0 分布方向 = normalize(LatDir − tan(θ/2) × AlongDir)</summary>
         public XYZ P0LineDir { get; set; }
-        /// <summary>+1 = 下游（RefDir 正向），-1 = 上游</summary>
         public int AlongSign { get; set; }
-        /// <summary>+1 = 左拐，-1 = 右拐</summary>
         public int LatSign { get; set; }
-        /// <summary>全局横向平移向量 = LatDir × |offset|</summary>
         public XYZ LateralVector { get; set; }
-        /// <summary>|offset|（ft）</summary>
         public double AbsOffset { get; set; }
-        /// <summary>斜段角度（弧度）</summary>
         public double AngleRad { get; set; }
-        /// <summary>斜段沿管方向的投影 = H × cos(θ) / sin(θ)（ft）</summary>
         public double ProjLen { get; set; }
         public bool IsValid { get; set; }
         public string ErrorMessage { get; set; }
     }
 
-    /// <summary>单根管的平面拐弯几何</summary>
     public class LateralBendGeometry
     {
-        /// <summary>打断点 = 该管 ∩ 过 P1 沿 P0LineDir 的直线</summary>
         public XYZ P0 { get; set; }
-        /// <summary>斜段终点 = P0 + ProjLen × AlongDir + |offset| × LatDir</summary>
         public XYZ Q { get; set; }
-        /// <summary>平移侧端点（原路径）</summary>
         public XYZ LiftEndPt { get; set; }
-        /// <summary>固定侧端点（原路径）</summary>
         public XYZ FixedEndPt { get; set; }
-        /// <summary>P0 到平移侧端点的沿管距离</summary>
         public double AvailableSpace { get; set; }
         public XYZ LateralVector { get; set; }
         public bool LiftRight { get; set; }
@@ -77,17 +58,10 @@ namespace MEPTools.MEPPlanarLateralBend
 
         /// <summary>
         /// 计算全局参考坐标系。
-        /// - refDir     = 参考管在 P1 处的水平切线
-        /// - perpLeft   = Z × refDir
-        /// - alongDir   = sAlong × refDir（指向平移侧）
-        /// - latDir     = sLat × perpLeft（指向拐弯侧）
-        /// - projLen    = |offset| / tan(θ) = |offset| × cos(θ) / sin(θ)
-        /// - diagDir    = normalize(alongDir × projLen + latDir × |offset|)（斜段方向）
-        /// - p0LineDir  = normalize(latDir − tan(θ/2) × alongDir)（P0 分布方向，角平分线）
-        /// - lateralVec = latDir × |offset|
+        /// 【修改】AbsOffset 由 P2 到参考管水平轴线的垂直距离自动计算。
         /// </summary>
         public static GlobalFrame ComputeGlobalFrame(
-            Curve refCurve, XYZ p1, XYZ p2, double offset_ft, double angleDeg)
+            Curve refCurve, XYZ p1, XYZ p2, double angleDeg)
         {
             var frame = new GlobalFrame { IsValid = false };
 
@@ -113,7 +87,7 @@ namespace MEPTools.MEPPlanarLateralBend
             if (proj == null) { frame.ErrorMessage = "P1 投影失败"; return frame; }
             XYZ p1OnCurve = proj.XYZPoint;
 
-            // 参考管在水平面内的方向（用 Line.Direction 更稳健）
+            // 参考管在水平面内的方向
             XYZ refDirRaw;
             Line asLine = refCurve as Line;
             if (asLine != null)
@@ -138,6 +112,7 @@ namespace MEPTools.MEPPlanarLateralBend
             XYZ refDir = refDirRaw.Normalize();
             XYZ perpLeft = XYZ.BasisZ.CrossProduct(refDir).Normalize();
 
+            // 计算 P2 相对于 P1 在水平面内的偏移向量
             XYZ d = new XYZ(p2.X - p1OnCurve.X, p2.Y - p1OnCurve.Y, 0);
             double dAlong = d.DotProduct(refDir);
             double dPerp = d.DotProduct(perpLeft);
@@ -150,7 +125,7 @@ namespace MEPTools.MEPPlanarLateralBend
             }
             if (Math.Abs(dPerp) < tolMm)
             {
-                frame.ErrorMessage = "P2 与 P1 沿管方向共线（无法判断左拐/右拐）";
+                frame.ErrorMessage = "P2 与 P1 沿管方向共线（无法判断左拐/右拐，且偏移距离为0）";
                 return frame;
             }
 
@@ -160,19 +135,16 @@ namespace MEPTools.MEPPlanarLateralBend
             XYZ alongDir = refDir * sAlong;
             XYZ latDir = perpLeft * sLat;
 
-            double absOffset = Math.Abs(offset_ft);
+            // 【核心修改】AbsOffset 由 P2 的垂直投影距离自动确定
+            double absOffset = Math.Abs(dPerp);
 
-            // projLen = |offset| / tan(θ) = |offset| × cos(θ) / sin(θ)
-            // θ = 90° → cos(90°) = 0 → projLen = 0（L 形直角拐弯，无 tan 奇异）
             double projLen = absOffset * cosA / sinA;
 
-            // 斜段方向（用 projLen、absOffset 的组合决定；θ=45° 时与 (along+lat)/√2 等价）
+            // 斜段方向
             XYZ diagRaw = alongDir * projLen + latDir * absOffset;
             XYZ diagDir = (diagRaw.GetLength() < 1e-9) ? alongDir : diagRaw.Normalize();
 
-            // P0 分布方向 = normalize(latDir − tan(θ/2) × alongDir)
-            // θ=45° → tan(22.5°) = √2−1（与旧版本一致）
-            // θ=90° → tan(45°) = 1
+            // P0 分布方向
             double tanHalf = Math.Tan(angleRad * 0.5);
             XYZ p0LineRaw = latDir - alongDir * tanHalf;
             XYZ p0LineDir = p0LineRaw.Normalize();
@@ -196,11 +168,8 @@ namespace MEPTools.MEPPlanarLateralBend
             return frame;
         }
 
-        /// <summary>
-        /// 计算单根管的拐弯几何：
-        /// - P0 = 该管中轴线 ∩ 过 P1 沿 P0LineDir 的直线
-        /// - Q  = P0 + ProjLen × AlongDir + |offset| × LatDir
-        /// </summary>
+        // ... 下面保留原来的 ComputePipeGeometry, TryIntersectCurveWithLine 等方法不变 ...
+        
         public static LateralBendGeometry ComputePipeGeometry(
             Curve curve, GlobalFrame frame, out string errorMsg)
         {
@@ -210,7 +179,6 @@ namespace MEPTools.MEPPlanarLateralBend
             if (curve == null) { errorMsg = "曲线为空"; return geom; }
             if (frame == null || !frame.IsValid) { errorMsg = "全局坐标系无效"; return geom; }
 
-            // ---------- P0 = 管 i ∩ (过 P1 沿 P0LineDir 的直线) ----------
             XYZ p0;
             if (!TryIntersectCurveWithLine(curve, frame.P1, frame.P0LineDir, out p0))
             {
@@ -218,7 +186,6 @@ namespace MEPTools.MEPPlanarLateralBend
                 return geom;
             }
 
-            // ---------- 沿 AlongDir 判断平移侧 / 固定侧端点 ----------
             XYZ cs = curve.GetEndPoint(0);
             XYZ ce = curve.GetEndPoint(1);
             XYZ alongDir = frame.AlongDir;
@@ -238,7 +205,6 @@ namespace MEPTools.MEPPlanarLateralBend
 
             double tolFt = UnitUtils.ConvertToInternalUnits(0.5, UnitTypeId.Millimeters);
 
-            // 可用空间必须 ≥ ProjLen（否则 Q 会超过 LiftEndPt）
             if (availableSpace < frame.ProjLen - tolFt)
             {
                 errorMsg =
@@ -248,7 +214,6 @@ namespace MEPTools.MEPPlanarLateralBend
                 return geom;
             }
 
-            // ---------- Q = P0 + ProjLen × AlongDir + |offset| × LatDir ----------
             XYZ q = p0 + frame.AlongDir * frame.ProjLen + frame.LatDir * frame.AbsOffset;
 
             if ((q - p0).GetLength() < MinTransitionLength)
@@ -268,10 +233,6 @@ namespace MEPTools.MEPPlanarLateralBend
             return geom;
         }
 
-        /// <summary>
-        /// 求直线曲线 C 与"过 lineOrigin 沿 lineDir 的无界直线 L"在 X-Y 平面的交点。
-        /// 仅支持 Line 类型曲线；交点必须落在管段参数范围内。
-        /// </summary>
         private static bool TryIntersectCurveWithLine(
             Curve curve, XYZ lineOrigin, XYZ lineDir, out XYZ p0)
         {

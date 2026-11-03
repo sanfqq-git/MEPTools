@@ -32,7 +32,8 @@ namespace MEPTools.MEPPlanarLateralBend
                 List<ElementId> elemIdList = new List<ElementId>();
                 HashSet<ElementId> addedIds = new HashSet<ElementId>();
 
-                // 1. 利用 Preselected 提取选中的 Tag，反查出被标记的管线
+                // 1. 尝试从预选中提取
+                // 1.1 利用 Preselected 提取选中的 Tag，反查出被标记的管线
                 var selectedTags = Preselected.GetSelectedIndependentTags(uidoc, doc.ActiveView);
                 foreach (var tag in selectedTags)
                 {
@@ -45,7 +46,7 @@ namespace MEPTools.MEPPlanarLateralBend
                     }
                 }
 
-                // 2. 同时检查用户直接选中的 MEP 元素
+                // 1.2 检查用户直接选中的 MEP 元素
                 foreach (ElementId id in uidoc.Selection.GetElementIds())
                 {
                     Element elem = doc.GetElement(id);
@@ -53,27 +54,48 @@ namespace MEPTools.MEPPlanarLateralBend
                         elemIdList.Add(id);
                 }
 
+                // 2. 无有效预选，提示用户并进入交互拾取
                 if (elemIdList.Count < 1)
                 {
-                    InfoCenterTip.Show("请至少选中 1 个管道/风管/线槽（或其对应的标记）！");
+                    InfoCenterTip.Show("未检测到预选元素，请去选择要处理的 MEP 元素（管道/风管/线槽）。");
+                    
+                    try
+                    {
+                        IList<Reference> refs = uidoc.Selection.PickObjects(ObjectType.Element,
+                            new MEPCurveSelectionFilter(),
+                            "请选择要处理的 MEP 元素（可框选）");
+
+                        foreach (var r in refs)
+                        {
+                            Element elem = doc.GetElement(r.ElementId);
+                            if (IsValidMEPElement(elem) && addedIds.Add(elem.Id))
+                                elemIdList.Add(elem.Id);
+                        }
+                    }
+                    catch (Autodesk.Revit.Exceptions.OperationCanceledException)
+                    {
+                        debugInfo.AppendLine("用户取消了元素选择");
+                        return Result.Cancelled;
+                    }
+                }
+
+                // 3. 最终校验
+                if (elemIdList.Count < 1)
+                {
+                    InfoCenterTip.Show("未选择到任何有效的 MEP 元素，操作终止。");
                     return Result.Failed;
                 }
 
-                // ---- 参数对话框（H + θ）----
-                var dlg = new LateralBendDialog(200.0, 45.0);
+                // ---- 参数对话框（只输入角度 θ）----
+                var dlg = new LateralBendDialog(45.0);
                 if (dlg.ShowDialog() != true || !dlg.Confirmed)
                 {
                     return Result.Cancelled;
                 }
-                double offset_mm = dlg.OffsetMm;
                 double angleDeg = dlg.AngleDeg;
-
-                double offset_ft = UnitUtils.ConvertToInternalUnits(Math.Abs(offset_mm), UnitTypeId.Millimeters);
                 double angleRad = angleDeg * Math.PI / 180.0;
-                double projLen_mm = Math.Abs(offset_mm) * Math.Cos(angleRad) / Math.Sin(angleRad);
 
-                debugInfo.AppendLine($"参数：H = {Math.Abs(offset_mm):F2} mm, θ = {angleDeg:F1}°");
-                debugInfo.AppendLine($"斜段沿管投影 = {projLen_mm:F2} mm（= H/tan(θ)）");
+                debugInfo.AppendLine($"参数：θ = {angleDeg:F1}°");
 
                 // ---- 拾取 P1 ----
                 Reference ref1 = uidoc.Selection.PickObject(ObjectType.PointOnElement,
@@ -95,9 +117,9 @@ namespace MEPTools.MEPPlanarLateralBend
                 try
                 {
                     sidePt = uidoc.Selection.PickPoint(
-                        "【第 2/3 步】拾取 P2（方向点）\n" +
-                        "⚠ 请把 P2 点在参考管的水平侧方（左或右），\n" +
-                        "   不要点在管轴线的延伸方向上（斜管容易被视觉误导）");
+                        "【第 2/3 步】拾取 P2（决定偏移距离与方向）\n" +
+                        "⚠ P2 到 P1 的横向垂直距离将作为偏移量 H，\n" +
+                        "   请点在参考管的侧方（左或右），不要点在轴线上。");
                 }
                 catch (Autodesk.Revit.Exceptions.OperationCanceledException)
                 {
@@ -107,7 +129,7 @@ namespace MEPTools.MEPPlanarLateralBend
 
                 // ---- 计算全局 frame ----
                 GlobalFrame frame = MEPLateralBendCalculator.ComputeGlobalFrame(
-                    refCurve, breakPt, sidePt, offset_ft, angleDeg);
+                    refCurve, breakPt, sidePt, angleDeg);
 
                 if (frame == null || !frame.IsValid)
                 {
@@ -115,6 +137,11 @@ namespace MEPTools.MEPPlanarLateralBend
                     InfoCenterTip.Show($"计算失败: {frameErr}");
                     return Result.Failed;
                 }
+
+                double offset_mm = frame.AbsOffset * 304.8;
+                double projLen_mm = frame.ProjLen * 304.8;
+                debugInfo.AppendLine($"自动计算偏移量 H = {offset_mm:F1} mm");
+                debugInfo.AppendLine($"斜段沿管投影 = {projLen_mm:F1} mm（= H/tan(θ)）");
 
                 MEPLateralBendService service = new MEPLateralBendService(debugInfo);
                 int successCount = 0, failCount = 0;
@@ -162,20 +189,15 @@ namespace MEPTools.MEPPlanarLateralBend
             }
         }
 
-        /// <summary>
-        /// 兼容 Revit 2022+ 和旧版本的获取标记引用的方法
-        /// </summary>
         private ICollection<ElementId> GetTaggedElementIds(IndependentTag tag)
         {
             try
             {
-                // Revit 2022 及以上
                 var refs = tag.GetTaggedReferences();
                 return refs.Select(r => r.ElementId).ToList();
             }
             catch (Exception)
             {
-                // 兜底兼容 Revit 2021 及以下
                 var linkIds = tag.GetTaggedElementIds();
                 if (linkIds == null) return new List<ElementId>();
 
