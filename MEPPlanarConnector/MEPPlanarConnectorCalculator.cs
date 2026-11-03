@@ -14,6 +14,8 @@ namespace MEPTools.MEPPlanarConnector.Core
     {
         public XYZ PA { get; set; }
         public XYZ PB { get; set; }
+        public XYZ OuterPA { get; set; }
+        public XYZ OuterPB { get; set; }
         public XYZ P { get; set; }
         public bool IsCollinear { get; set; }
         public bool IsValid { get; set; }
@@ -71,6 +73,12 @@ namespace MEPTools.MEPPlanarConnector.Core
             XYZ a0 = la.GetEndPoint(0), a1 = la.GetEndPoint(1);
             XYZ b0 = lb.GetEndPoint(0), b1 = lb.GetEndPoint(1);
 
+            if (Math.Abs(a0.Z - b0.Z) > 1e-3)
+            {
+                g.ErrorMessage = "两管标高不一致，无法平面共线合并";
+                return g;
+            }
+
             XYZ da = new XYZ(a1.X - a0.X, a1.Y - a0.Y, 0);
             XYZ db = new XYZ(b1.X - b0.X, b1.Y - b0.Y, 0);
             if (da.GetLength() < 1e-9 || db.GetLength() < 1e-9) { g.ErrorMessage = "存在竖直段，无法平面连接"; return g; }
@@ -83,13 +91,17 @@ namespace MEPTools.MEPPlanarConnector.Core
             XYZ bMid = (b0 + b1) * 0.5;
             XYZ perp = new XYZ(-da.Y, da.X, 0);
             double perpDist = Math.Abs((bMid - a0).DotProduct(perp));
-            double tolFt = UnitUtils.ConvertToInternalUnits(50.0, UnitTypeId.Millimeters); // 允许50mm错位
+            double tolFt = UnitUtils.ConvertToInternalUnits(50.0, UnitTypeId.Millimeters);
 
             if (perpDist > tolFt) { g.ErrorMessage = $"两管平行但错开 {perpDist * FtToMm:F1}mm，超出容差"; return g; }
 
             g.PA = (a0.DistanceTo(bMid) < a1.DistanceTo(bMid)) ? a0 : a1;
             g.PB = (b0.DistanceTo(aMid) < b1.DistanceTo(aMid)) ? b0 : b1;
             g.P = g.PA;
+
+            g.OuterPA = (g.PA.DistanceTo(a0) < 1e-4) ? a1 : a0;
+            g.OuterPB = (g.PB.DistanceTo(b0) < 1e-4) ? b1 : b0;
+
             g.IsValid = true;
             return g;
         }
@@ -134,7 +146,6 @@ namespace MEPTools.MEPPlanarConnector.Core
 
             if (!isCorner)
             {
-                // ========== 共线模式：采用空间排序法 ==========
                 Line refLine = GetAxisLine(aList[0]);
                 if (refLine == null) return pairs;
                 XYZ dir = (refLine.GetEndPoint(1) - refLine.GetEndPoint(0)).Normalize();
@@ -159,7 +170,6 @@ namespace MEPTools.MEPPlanarConnector.Core
             }
             else
             {
-                // ========== 转角模式：采用交点距离最优贪心匹配 ==========
                 var availableB = new List<Element>(bList);
 
                 foreach (var a in aList)
@@ -181,7 +191,6 @@ namespace MEPTools.MEPPlanarConnector.Core
                         var g = ComputeCorner(a, b);
                         if (g.IsValid)
                         {
-                            // 核心：交点P到A端点的距离 + 交点P到B端点的距离，越小越说明该配对正确
                             double cost = g.PA.DistanceTo(g.P) + g.PB.DistanceTo(g.P);
                             if (cost < minCost)
                             {

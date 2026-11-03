@@ -109,6 +109,14 @@ namespace MEPTools.MEPPlanarConnector.Commands
                     Element elA = doc.GetElement(pair.AId);
                     Element elB = doc.GetElement(pair.BId);
 
+                    // 【关键修复】：如果在之前的配对中，B 已经被吞噬删除了，这里会拿到 null，直接跳过
+                    if (elA == null || elB == null)
+                    {
+                        MEPLogger.Instance.AppendLine($"✗ 跳过 {pair.AId} & {pair.BId}: 元素已在之前的合并中被删除");
+                        fail++;
+                        continue;
+                    }
+
                     if (!PlanarConnectorCalculator.IsSameType(elA, elB))
                     {
                         MEPLogger.Instance.AppendLine($"✗ 跳过 {elA.Id} & {elB.Id}: 元素类型不同");

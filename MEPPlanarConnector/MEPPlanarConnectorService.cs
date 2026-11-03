@@ -12,126 +12,162 @@ namespace MEPTools.MEPPlanarConnector.Core
         public PlanarConnectorService() : this(MEPLogger.Instance) { }
         public PlanarConnectorService(MEPLogger log) { _log = log ?? MEPLogger.Instance; }
 
+        #region ==================== 共线连接 ====================
+
         public bool ProcessCollinear(Document doc, Element a, Element b)
         {
-            var g = PlanarConnectorCalculator.ComputeCollinear(a, b);
-            if (!g.IsValid) { _log.AppendLine("✗ " + g.ErrorMessage); return false; }
-
-            // ==========================================
-            // 检测逻辑 1：类型与系统匹配检查 (防止水管连风管)
-            // ==========================================
-            MEPElementType typeA = PlanarConnectorCalculator.GetElementType(a);
-            MEPElementType typeB = PlanarConnectorCalculator.GetElementType(b);
-            if (typeA != typeB) { _log.AppendLine("✗ 跳过：元素类型不同"); return false; }
-
-            if (typeA == MEPElementType.Pipe || typeA == MEPElementType.Duct)
+            // 【关键修复】：前置判断，若传入元素已经被删除（null），直接拦截
+            if (a == null || b == null || !a.IsValidObject || !b.IsValidObject) 
             {
-                var sysA = PlanarConnectorCalculator.GetSystemTypeId(a, typeA);
-                var sysB = PlanarConnectorCalculator.GetSystemTypeId(b, typeB);
-                if (sysA != sysB) { _log.AppendLine("✗ 跳过：系统类型不一致"); return false; }
-            }
-
-            // 目标连接点设为 B 的端点 (把 A 挪过去)
-            XYZ targetPt = g.PB;
-
-            // 1. 如果端点未重合，先移动端点
-            if (g.PA.DistanceTo(targetPt) > 1e-4)
-            {
-                if (!MoveEndpointTo(doc, a, g.PA, targetPt))
-                {
-                    _log.AppendLine($"✗ 延伸/修剪失败: {a.Id} -> {b.Id}");
-                    return false;
-                }
-            }
-
-            // 2. 强制刷新文档，确保连接件位置更新
-            doc.Regenerate();
-
-            // 3. 获取两个元素在连接点处的 Connector
-            Connector ca = GetConnectorAtPoint(a, targetPt);
-            Connector cb = GetConnectorAtPoint(b, targetPt);
-
-            // 如果没找到，尝试寻找距离最近的两个未连接 Connector
-            if (ca == null || cb == null)
-            {
-                FindClosestConnectorPair(a, b, out ca, out cb, out double dist);
-                double tolFt = UnitUtils.ConvertToInternalUnits(10.0, UnitTypeId.Millimeters);
-                if (ca == null || cb == null || dist > tolFt)
-                {
-                    _log.AppendLine($"✗ 无法找到相邻的连接件: {a.Id} -> {b.Id} (距离: {dist * 304.8:F1}mm)");
-                    return false;
-                }
-            }
-
-            // ==========================================
-            // 检测逻辑 2：连接器状态与有效性检查
-            // ==========================================
-            if (ca.IsConnectedTo(cb))
-            {
-                _log.AppendLine($"✓ 已经是连接状态: {a.Id} -> {b.Id}");
-                return true;
-            }
-
-            if (ca.Domain != cb.Domain)
-            {
-                _log.AppendLine($"✗ 连接器领域(Domain)不一致: {ca.Domain} vs {cb.Domain}");
+                _log.AppendLine("✗ [共线] 传入元素无效或已被删除");
                 return false;
             }
 
-            if (ca.IsConnected || cb.IsConnected)
+            var g = PlanarConnectorCalculator.ComputeCollinear(a, b);
+            if (!g.IsValid) { _log.AppendLine("✗ [共线] 计算失败: " + g.ErrorMessage); return false; }
+
+            // 【核心修复】：在删除 b 之前，先保存好两者的 ID，后续日志只用 ID 变量，绝不访问 b.Id
+            ElementId idA = a.Id;
+            ElementId idB = b.Id;
+
+            // 1. 核心逻辑：无条件尝试把 A 拉长覆盖 B，并删除 B（保留 A 组 ID）
+            if (TryHardMerge(doc, a, b, g))
             {
-                _log.AppendLine($"⚠ 警告: 端点已被其他元素占用，尝试强制连接");
-                // 这里可以加入打断已有连接（BreakCurve）的逻辑，但通常我们直接尝试 ConnectTo，Revit会处理或抛出异常
+                _log.AppendLine($"✓ [共线] 成功合并为一条管线: {idA} 吞噬 {idB}");
+                return true;
             }
 
-            // 4. 执行真正的物理连接
+            // 2. 如果吞噬失败（例如 B 的远端连着其他配件，Revit 拒绝删除报 Error 1）
+            // 退回“端点对齐 + 逻辑连接”，绝不生成任何配件。
+            _log.AppendLine($"⚠ [共线] 强行吞噬失败 {idA} -> {idB}，退回端点对齐+逻辑连接模式。");
+            return ProcessCollinearFallback(doc, a, b, g);
+        }
+
+        private bool TryHardMerge(Document doc, Element a, Element b, PlanarConnectGeometry g)
+        {
             try
             {
-                ca.ConnectTo(cb);
-                _log.AppendLine($"✓ 共线物理连接成功 (ConnectTo): {a.Id} -> {b.Id}");
+                var lcA = a.Location as LocationCurve;
+                var lineA = lcA?.Curve as Line;
+                if (lineA == null) return false;
+
+                XYZ a0 = lineA.GetEndPoint(0);
+                XYZ a1 = lineA.GetEndPoint(1);
+
+                // 找到 A 不需要移动的那一端（也就是原 A 的外侧端）
+                XYZ preservedA = (g.PA.DistanceTo(a0) < 1e-3) ? a1 : a0;
+
+                Line newLine;
+                // 严格判断方向，生成与原拓扑一致的曲线，避免 Error 2 (反向报错)
+                if (a0.DistanceTo(preservedA) < 1e-3)
+                {
+                    // A 的起点是固定端，那么把终点拉伸到 B 的远端
+                    newLine = Line.CreateBound(a0, g.OuterPB);
+                }
+                else
+                {
+                    // A 的终点是固定端，那么把起点拉伸到 B 的远端
+                    newLine = Line.CreateBound(g.OuterPB, a1);
+                }
+
+                // 暴力拉长 A
+                lcA.Curve = newLine;
+                doc.Regenerate();
+
+                // 暴力删除 B
+                doc.Delete(b.Id);
+                doc.Regenerate();
+                
                 return true;
             }
             catch (Exception ex)
             {
-                _log.AppendLine($"✗ 物理连接失败: {ex.Message}");
+                _log.AppendLine($"⚠ [共线] 吞噬发生异常: {ex.Message}");
                 return false;
             }
         }
 
-        public bool ProcessCorner(Document doc, Element a, Element b)
+        private bool ProcessCollinearFallback(Document doc, Element a, Element b, PlanarConnectGeometry g)
         {
-            var g = PlanarConnectorCalculator.ComputeCorner(a, b);
-            if (!g.IsValid) { _log.AppendLine("✗ " + g.ErrorMessage); return false; }
-
-            // 移动 A 的端点到交点 (自动判定是延长还是修剪)
-            if (g.PA.DistanceTo(g.P) > 1e-4)
+            // 1. 移动 A 端点使其与 B 完全重合
+            if (g.PA.DistanceTo(g.PB) > 1e-4)
             {
-                if (!MoveEndpointTo(doc, a, g.PA, g.P)) 
+                if (!MoveEndpointTo(doc, a, g.PA, g.PB))
                 {
-                    _log.AppendLine($"✗ 移动 A({a.Id}) 失败");
-                    return false; 
-                }
-            }
-            
-            // 移动 B 的端点到交点
-            if (g.PB.DistanceTo(g.P) > 1e-4)
-            {
-                if (!MoveEndpointTo(doc, b, g.PB, g.P)) 
-                {
-                    _log.AppendLine($"✗ 移动 B({b.Id}) 失败");
+                    _log.AppendLine($"✗ [共线-退避] 端点对齐失败");
                     return false;
                 }
             }
-
             doc.Regenerate();
-            
-            // 转角模式依然通过生成弯头来真实连接
-            return TryCreateElbow(doc, a.Id, b.Id, g.P);
+
+            // 2. 获取端点连接件
+            Connector ca = GetExactConnector(a, g.PB);
+            Connector cb = GetExactConnector(b, g.PB);
+
+            if (ca == null || cb == null) 
+            {
+                _log.AppendLine($"✗ [共线-退避] 无法获取端点连接件");
+                return false;
+            }
+            if (ca.IsConnectedTo(cb)) return true;
+
+            // 3. 直接调用 ConnectTo 进行底层逻辑连接 (绝不生成可视配件)
+            try
+            {
+                ca.ConnectTo(cb);
+                _log.AppendLine($"✓ [共线-退避] 底层逻辑连通成功");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _log.AppendLine($"✗ [共线-退避] ConnectTo 失败: {ex.Message}");
+                return false;
+            }
         }
 
-        /// <summary>
-        /// 把元素的端点移动到新位置（支持延长和修剪）
-        /// </summary>
+        #endregion
+
+        #region ==================== 转角连接 ====================
+
+        public bool ProcessCorner(Document doc, Element a, Element b)
+        {
+            if (a == null || b == null || !a.IsValidObject || !b.IsValidObject) return false;
+
+            var g = PlanarConnectorCalculator.ComputeCorner(a, b);
+            if (!g.IsValid) { _log.AppendLine("✗ [转角] 计算失败: " + g.ErrorMessage); return false; }
+
+            if (g.PA.DistanceTo(g.P) > 1e-4) MoveEndpointTo(doc, a, g.PA, g.P);
+            if (g.PB.DistanceTo(g.P) > 1e-4) MoveEndpointTo(doc, b, g.PB, g.P);
+
+            doc.Regenerate();
+
+            Connector ca = GetExactConnector(a, g.P);
+            Connector cb = GetExactConnector(b, g.P);
+
+            if (ca == null || cb == null) 
+            {
+                _log.AppendLine("✗ [转角] 无法获取交点处连接件");
+                return false;
+            }
+            if (ca.IsConnectedTo(cb)) return true;
+
+            try
+            {
+                doc.Create.NewElbowFitting(ca, cb);
+                _log.AppendLine($"✓ [转角] 弯头创建成功: {a.Id} -> {b.Id}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _log.AppendLine($"✗ [转角] 创建弯头失败: {ex.Message}");
+                return false;
+            }
+        }
+
+        #endregion
+
+        #region ==================== 公共辅助 ====================
+
         private bool MoveEndpointTo(Document doc, Element e, XYZ oldEndPt, XYZ newEndPt)
         {
             var mc = e as MEPCurve;
@@ -142,88 +178,30 @@ namespace MEPTools.MEPPlanarConnector.Core
             XYZ p0 = line.GetEndPoint(0);
             XYZ p1 = line.GetEndPoint(1);
 
-            const double tol = 1e-3;
-            XYZ newP0 = p0, newP1 = p1;
-            
-            if (p0.DistanceTo(oldEndPt) < tol) newP0 = newEndPt;
-            else if (p1.DistanceTo(oldEndPt) < tol) newP1 = newEndPt;
+            if (p0.DistanceTo(oldEndPt) < 1e-3) p0 = newEndPt;
+            else if (p1.DistanceTo(oldEndPt) < 1e-3) p1 = newEndPt;
             else return false;
 
-            // 防止长度变为 0
-            if (newP0.DistanceTo(newP1) < 1e-4) return false;
+            if (p0.DistanceTo(p1) < 1e-4) return false;
 
             try
             {
-                lc.Curve = Line.CreateBound(newP0, newP1);
-                doc.Regenerate();
+                lc.Curve = Line.CreateBound(p0, p1);
                 return true;
             }
             catch { return false; }
         }
 
-        private bool TryCreateElbow(Document doc, ElementId idA, ElementId idB, XYZ atPt)
-        {
-            var elA = doc.GetElement(idA);
-            var elB = doc.GetElement(idB);
-            if (elA == null || elB == null) return false;
-
-            Connector ca = GetConnectorAtPoint(elA, atPt);
-            Connector cb = GetConnectorAtPoint(elB, atPt);
-
-            if (ca == null || cb == null)
-            {
-                FindClosestConnectorPair(elA, elB, out ca, out cb, out _);
-                if (ca == null || cb == null) return false;
-            }
-
-            try
-            {
-                FamilyInstance fit = doc.Create.NewElbowFitting(ca, cb);
-                if (fit != null)
-                {
-                    _log.AppendLine($"✓ 转角连接成功，弯头 ID={fit.Id}");
-                    return true;
-                }
-            }
-            catch (Exception ex)
-            {
-                _log.AppendLine($"✗ 创建弯头失败: {ex.Message}");
-            }
-            return false;
-        }
-
-        private Connector GetConnectorAtPoint(Element elem, XYZ pt)
+        private Connector GetExactConnector(Element elem, XYZ pt)
         {
             var cm = GetConnectorManager(elem);
             if (cm == null) return null;
-            double tol = UnitUtils.ConvertToInternalUnits(20.0, UnitTypeId.Millimeters);
-            Connector best = null;
-            double bestD = double.MaxValue;
+
             foreach (Connector c in cm.Connectors)
             {
-                double d = c.Origin.DistanceTo(pt);
-                if (d < bestD) { bestD = d; best = c; }
+                if (c.Origin.DistanceTo(pt) < 1e-5) return c;
             }
-            return (best != null && bestD < tol) ? best : null;
-        }
-
-        private void FindClosestConnectorPair(Element a, Element b, out Connector ca, out Connector cb, out double distance)
-        {
-            ca = null; cb = null; distance = double.MaxValue;
-            var cma = GetConnectorManager(a);
-            var cmb = GetConnectorManager(b);
-            if (cma == null || cmb == null) return;
-
-            foreach (Connector c1 in cma.Connectors)
-            {
-                if (c1.IsConnected) continue;
-                foreach (Connector c2 in cmb.Connectors)
-                {
-                    if (c2.IsConnected) continue;
-                    double d = c1.Origin.DistanceTo(c2.Origin);
-                    if (d < distance) { distance = d; ca = c1; cb = c2; }
-                }
-            }
+            return null;
         }
 
         private static ConnectorManager GetConnectorManager(Element elem)
@@ -232,5 +210,7 @@ namespace MEPTools.MEPPlanarConnector.Core
             if (elem is FamilyInstance fi && fi.MEPModel != null) return fi.MEPModel.ConnectorManager;
             return null;
         }
+
+        #endregion
     }
 }
