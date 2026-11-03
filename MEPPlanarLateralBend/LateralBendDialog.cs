@@ -81,9 +81,14 @@ namespace MEPTools.MEPPlanarLateralBend
             Grid.SetColumn(btnPanel, 1);
             grid.Children.Add(btnPanel);
 
+            // 【修改】键盘监听：支持 Enter 键 和 空格键 确认，Esc 取消
             KeyDown += (s, e) =>
             {
-                if (e.Key == Key.Enter) OnOk();
+                if (e.Key == Key.Enter || e.Key == Key.Space) 
+                { 
+                    OnOk(); 
+                    e.Handled = true; 
+                }
                 if (e.Key == Key.Escape) { DialogResult = false; Close(); }
             };
             Content = grid;
