@@ -14,7 +14,6 @@ using Autodesk.Revit.UI.Selection;
 using MEPTools.Shared;
 using Forms = System.Windows.Forms;
 
-// ★ 冲突消歧义：明确使用 WPF 的 TextBox
 using TextBox = System.Windows.Controls.TextBox;
 
 namespace MEPTools.MEPHighLowUpDown
@@ -42,7 +41,6 @@ namespace MEPTools.MEPHighLowUpDown
 
             try
             {
-                // 1. 预选优先，否则提示选择
                 List<ElementId> elemIdList = GetValidMEPElementIds(doc, uidoc);
 
                 if (elemIdList.Count < 1)
@@ -94,7 +92,6 @@ namespace MEPTools.MEPHighLowUpDown
                     return Result.Failed;
                 }
 
-                // 2. 输入偏移值
                 double h_offset_mm = ShowInputDialog("45° 抬升/下降（Up/Down）",
                     "正数=抬升(Up)，负数=下降(Down)\n单位：mm\n示例：200 / -150", "200");
 
@@ -107,7 +104,6 @@ namespace MEPTools.MEPHighLowUpDown
 
                 double h_offset_ft = UnitUtils.ConvertToInternalUnits(h_offset_mm, UnitTypeId.Millimeters);
 
-                // 3. 拾取打断点（必须点选在管线上）
                 InfoCenterTip.Show("第 1/2 步：请选择打断点（原高度侧）");
                 Reference ref1 = uidoc.Selection.PickObject(ObjectType.PointOnElement,
                     new MEPCurveSelectionFilter(),
@@ -115,7 +111,6 @@ namespace MEPTools.MEPHighLowUpDown
 
                 XYZ breakPt = ref1.GlobalPoint;
 
-                // 4. 拾取升降侧（改为 PickPoint，可点任意空间位置）
                 InfoCenterTip.Show("第 2/2 步：请点击需要抬升/下降的一侧（大概位置即可）");
                 XYZ sidePt = uidoc.Selection.PickPoint(
                     "【第 2/2 步】在需要抬升/下降的一侧点击任意位置（无需点在管上）");
@@ -123,7 +118,6 @@ namespace MEPTools.MEPHighLowUpDown
                 Log($"打断点: {MEPUpDownCalculator.Fmt(breakPt)}");
                 Log($"升降侧参考点: {MEPUpDownCalculator.Fmt(sidePt)}");
 
-                // 5. 单事务处理
                 MEPUpDownService service = new MEPUpDownService(debugInfo);
 
                 using (Transaction trans = new Transaction(doc, "45° Up/Down"))
@@ -151,7 +145,6 @@ namespace MEPTools.MEPHighLowUpDown
                     trans.Commit();
                 }
 
-                // 6. 结果通知
                 if (failCount == 0)
                 {
                     InfoCenterTip.Show($"✓ 处理完成：成功 {successCount} 个元素");
