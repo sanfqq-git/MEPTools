@@ -52,10 +52,18 @@ namespace MEPTools
 
                 // ================= 4. 其他辅助工具 (面板直接展示) =================
                 new ButtonConfig { Text = "链接墙洞", ToolTip = "在链接模型（如建筑墙）上批量创建墙洞", CommandType = typeof(MEPTools.LinkElementWallHole.Command) },
+                
+                // 【批量打断按钮】
+                new ButtonConfig { Text = "批量打断管线", ToolTip = "选中多个 MEP 管线后，指定打断点，批量执行保留原 ID 的打断并恢复连接", CommandType = typeof(MEPTools.MEPBatchBreak.Command) },
+                
                 new ButtonConfig { Text = "删除重复图元", ToolTip = "查找并删除当前视图中重复的 MEP 图元", CommandType = typeof(MEPTools.RemoveDuplicateElements.Command) },
                 new ButtonConfig { Text = "标高重命名", ToolTip = "批量重命名或规范化 Revit 标高名称", CommandType = typeof(MEPTools.RevitElevationRenamer.Command) },
                 new ButtonConfig { Text = "系统检查", ToolTip = "检查 MEP 系统的连通性及参数完整性", CommandType = typeof(MEPTools.SystemChecker.Command) },
                 new ButtonConfig { Text = "DUCT更新尺寸", ToolTip = "更新DUCT尺寸", CommandType = typeof(MEPTools.DuctResize.Command) },
+
+                // ================= 5. 工作集管理 (下拉菜单) ⭐新增 =================
+                new ButtonConfig { Text = "改元素到默认工作集", ToolTip = "将选中的 MEP 元素批量修改为当前文档的活动工作集", CommandType = typeof(MEPTools.WorksetManager.CmdChangeWorkset), PulldownGroup = "工作集管理" },
+                new ButtonConfig { Text = "提取并设为默认工作集", ToolTip = "选择参考元素，将其所属工作集提取并设为当前文档的默认（活动）工作集", CommandType = typeof(MEPTools.WorksetManager.CmdSetDefaultWorkset), PulldownGroup = "工作集管理" },
             };
         }
     }

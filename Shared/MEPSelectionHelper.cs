@@ -4,6 +4,7 @@ using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
+using Autodesk.Revit.Exceptions; // ⭐ 必须引入这个命名空间以捕获 Revit 专属的取消异常
 
 namespace MEPTools.Shared
 {
@@ -12,20 +13,15 @@ namespace MEPTools.Shared
         /// <summary>
         /// 智能获取元素（有预选直接返回，无预选则 InfoCenter 提示并使用空格键交互选择）
         /// </summary>
-        /// <param name="uidoc">UIDocument</param>
-        /// <param name="filter">选择过滤器</param>
-        /// <param name="pickPrompt">底部状态栏提示文字</param>
-        /// <param name="infoTipNoPreselection">InfoCenter 提示文字</param>
-        /// <param name="minCount">最少需要的元素数量</param>
-        /// <param name="useSpaceKey">是否使用空格键确认</param>
-        /// <returns>返回选中的元素列表，如果取消或数量不足则返回空列表</returns>
+        /// <param name="singlePick">是否限制只能单选（默认 false 为多选）</param>
         public static List<Element> GetElements(
             UIDocument uidoc,
             ISelectionFilter filter,
             string pickPrompt,
             string infoTipNoPreselection = "请在视图中选择元素，按空格键结束",
             int minCount = 1,
-            bool useSpaceKey = true)
+            bool useSpaceKey = true,
+            bool singlePick = false) // ⭐ 新增参数
         {
             Document doc = uidoc.Document;
             List<Element> result = new List<Element>();
@@ -38,6 +34,12 @@ namespace MEPTools.Shared
                     .Select(id => doc.GetElement(id))
                     .Where(e => e != null && (filter == null || filter.AllowElement(e)))
                     .ToList();
+                    
+                // 如果是单选模式且有预选，只取第一个
+                if (singlePick && result.Count > 1)
+                {
+                    result = new List<Element> { result.First() };
+                }
             }
 
             // 2. 预选数量不足，启动交互选择
@@ -48,21 +50,21 @@ namespace MEPTools.Shared
 
                 try
                 {
-                    if (useSpaceKey)
+                    // 单选通常不需要空格确认，点完即结束
+                    if (useSpaceKey && !singlePick) 
                     {
-                        // 使用 SpaceKeyFinisher 包裹，实现按空格点击状态栏 Finish
                         using (var finisher = new SpaceKeyFinisher())
                         {
                             finisher.Enable();
-                            result = DoPickObjects(uidoc, filter, pickPrompt, doc);
+                            result = DoPickObjects(uidoc, filter, pickPrompt, doc, singlePick);
                         }
                     }
                     else
                     {
-                        result = DoPickObjects(uidoc, filter, pickPrompt, doc);
+                        result = DoPickObjects(uidoc, filter, pickPrompt, doc, singlePick);
                     }
                 }
-                catch (OperationCanceledException)
+                catch (Autodesk.Revit.Exceptions.OperationCanceledException) // ⭐ 准确捕获 Revit 的取消异常
                 {
                     InfoCenterTip.Show("操作已取消");
                     MEPLogger.Instance.EndSession("Cancelled by user.");
@@ -81,14 +83,20 @@ namespace MEPTools.Shared
             return result;
         }
 
-        private static List<Element> DoPickObjects(UIDocument uidoc, ISelectionFilter filter, string prompt, Document doc)
+        private static List<Element> DoPickObjects(UIDocument uidoc, ISelectionFilter filter, string prompt, Document doc, bool singlePick)
         {
-            IList<Reference> refs = uidoc.Selection.PickObjects(
-                ObjectType.Element,
-                filter,
-                prompt);
-
-            return refs.Select(r => doc.GetElement(r.ElementId)).ToList();
+            if (singlePick)
+            {
+                // 单选逻辑
+                Reference reference = uidoc.Selection.PickObject(ObjectType.Element, filter, prompt);
+                return new List<Element> { doc.GetElement(reference.ElementId) };
+            }
+            else
+            {
+                // 多选逻辑
+                IList<Reference> refs = uidoc.Selection.PickObjects(ObjectType.Element, filter, prompt);
+                return refs.Select(r => doc.GetElement(r.ElementId)).ToList();
+            }
         }
     }
 }
