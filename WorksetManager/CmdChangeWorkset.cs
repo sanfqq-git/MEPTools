@@ -48,7 +48,7 @@ namespace MEPTools.WorksetManager
 
                 int successCount = 0;
                 int failCount = 0;
-                int skipCount = 0; // ⭐ 新增：记录原本就在当前工作集的元素数量
+                int skipCount = 0;
 
                 // 3. 开启事务修改工作集
                 using (Transaction trans = new Transaction(doc, "修改元素工作集"))
@@ -66,7 +66,7 @@ namespace MEPTools.WorksetManager
                             continue;
                         }
 
-                        // ⭐ 关键优化：获取元素当前的工作集 ID，若与目标一致，则直接跳过
+                        // ⭐ 获取元素当前的工作集 ID，若与目标一致，则跳过，避免污染协同状态
                         int currentWorksetIntId = param.AsInteger();
                         if (currentWorksetIntId == activeWorksetId.IntegerValue)
                         {
@@ -74,7 +74,7 @@ namespace MEPTools.WorksetManager
                             continue;
                         }
 
-                        // 只有在工作集不同时才执行 Set
+                        // 只有真正执行了 Set 且返回 true，才算成功
                         if (param.Set(activeWorksetId.IntegerValue))
                         {
                             successCount++;
@@ -86,7 +86,7 @@ namespace MEPTools.WorksetManager
                         }
                     }
                     
-                    // 检查事务是否成功提交
+                    // 检查事务提交状态
                     if (trans.Commit() != TransactionStatus.Committed)
                     {
                         successCount = 0;

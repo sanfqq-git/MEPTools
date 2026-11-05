@@ -27,16 +27,16 @@ namespace MEPTools.WorksetManager
 
             try
             {
-                // 1. 获取元素（开启单选模式，自动处理预选和点击）
+                // 1. 获取元素（开启单选模式）
                 var filter = new MEPElementSelectionFilter();
                 List<Element> selectedElements = MEPSelectionHelper.GetElements(
                     uidoc,
                     filter,
-                    "请选择参考元素的 MEP 元素", // 单选模式下不需要按空格
+                    "请选择参考元素的 MEP 元素",
                     "请在视图中选择一个元素以提取其工作集",
                     minCount: 1,
-                    useSpaceKey: false, // 单选模式关闭空格
-                    singlePick: true    // ⭐ 开启单选限制
+                    useSpaceKey: false, 
+                    singlePick: true
                 );
 
                 if (selectedElements == null || selectedElements.Count == 0) return Result.Cancelled;
@@ -85,7 +85,6 @@ namespace MEPTools.WorksetManager
             }
             catch (Autodesk.Revit.Exceptions.OperationCanceledException)
             {
-                // 拦截按 Esc 的取消操作，静默返回，不写错误日志
                 return Result.Cancelled; 
             }
             catch (Exception ex)
