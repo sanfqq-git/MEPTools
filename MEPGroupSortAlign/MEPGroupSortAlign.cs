@@ -11,6 +11,7 @@ using Autodesk.Revit.UI.Selection;
 using System.Drawing;
 using Point = System.Drawing.Point;
 using WinForms = System.Windows.Forms;
+using MEPTools.Shared; // 引入共享类
 
 namespace MEPTools.MEPGroupSortAlign
 {
@@ -27,43 +28,47 @@ namespace MEPTools.MEPGroupSortAlign
             public double BaseElevation { get; set; }
         }
 
+        public class MEPCurveSelectionFilter : ISelectionFilter
+        {
+            public bool AllowElement(Element elem) => elem is MEPCurve && elem.Location is LocationCurve;
+            public bool AllowReference(Reference reference, XYZ position) => true;
+        }
+
         public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
         {
             UIApplication uiApp = commandData.Application;
             UIDocument uiDoc = uiApp.ActiveUIDocument;
             Document doc = uiDoc.Document;
 
-            // ---------- 1. 获取预选元素 ----------
-            ICollection<ElementId> selectedIds = uiDoc.Selection.GetElementIds();
-            if (selectedIds == null || selectedIds.Count < 2)
-            {
-                TaskDialog.Show("MEP分组排序对齐", "请至少选中两个管道/风管/线槽元素后再执行命令！");
-                return Result.Cancelled;
-            }
+            MEPLogger.Instance.StartSession("MEP分组排序对齐");
 
-            List<Element> filteredElements = selectedIds
-                .Select(id => doc.GetElement(id))
-                .Where(e => e is MEPCurve && e.Location is LocationCurve)
-                .ToList();
+            // ---------- 1. 使用通用方法获取预选或交互式选择的元素 ----------
+            List<Element> filteredElements = MEPSelectionHelper.GetElements(
+                uidoc: uiDoc,
+                filter: new MEPCurveSelectionFilter(),
+                pickPrompt: "请选择至少两个管道/风管/线槽，按空格键完成，按ESC取消",
+                infoTipNoPreselection: "请选择至少两个MEP元素，按空格键完成",
+                minCount: 2,
+                useSpaceKey: true);
 
             if (filteredElements.Count < 2)
             {
-                TaskDialog.Show("MEP分组排序对齐", "选中的元素中未包含有效的管道、风管或线槽！");
                 return Result.Cancelled;
             }
 
-            // ---------- 2. 询问净间距 ----------
+            // ---------- 2. 询问净间距（WinForms 输入框） ----------
             double spacingMM = PromptForValue("MEP分组排序对齐 - 输入净间距",
-                "请输入净间距（毫米）：按ESC取消视为默认50mm", DefaultSpacingMM);
+                "请输入净间距（毫米）：按ESC取消视为默认50mm，按空格确认", DefaultSpacingMM);
             double targetSpacingInternal = UnitUtils.ConvertToInternalUnits(
                 spacingMM, UnitTypeId.Millimeters);
 
-            // ---------- 3. 确定排列方向（用第一个预选元素） ----------
+            // ---------- 3. 确定排列方向 ----------
             Curve dirCurve = ((LocationCurve)filteredElements[0].Location).Curve;
             XYZ dirVec = dirCurve.GetEndPoint(1) - dirCurve.GetEndPoint(0);
             if (dirVec.GetLength() < 1e-9)
             {
-                TaskDialog.Show("MEP分组排序对齐", "首个元素长度为零，无法确定方向。");
+                InfoCenterTip.Show("首个元素长度为零，无法确定方向。");
+                MEPLogger.Instance.EndSession("Failed: Zero length direction vector.");
                 return Result.Cancelled;
             }
             dirVec = dirVec.Normalize();
@@ -121,7 +126,6 @@ namespace MEPTools.MEPGroupSortAlign
                             .GetEndPoint(0).DotProduct(perpVec))
                         .ToList();
 
-                    // 组内第一条暂放原位，后续按 前半径 + 净间距 + 后半径 依次展开
                     var targets = new List<double> { curProj[0] };
                     for (int i = 1; i < sorted.Count; i++)
                     {
@@ -135,10 +139,8 @@ namespace MEPTools.MEPGroupSortAlign
 
                 if (groupInfos.Count == 0) return;
 
-                // 全局锚点 = 各组首条元素投影的最小值 → 所有组左边缘齐平
                 double anchorProj = groupInfos.Select(g => g.curProj[0]).Min();
 
-                // 应用：每组首条对齐到 anchorProj
                 foreach (var (sorted, curProj, targets) in groupInfos)
                 {
                     double delta = anchorProj - targets[0];
@@ -153,15 +155,15 @@ namespace MEPTools.MEPGroupSortAlign
                 }
             }
 
-            // ==================== 事务组：预览 + 反向 ====================
+            // ==================== 事务组：预览 + 反向确认 ====================
             using (TransactionGroup tg = new TransactionGroup(doc,
                 $"MEP分组排序对齐 {spacingMM:0.##}mm"))
             {
                 tg.Start();
-
                 bool reversed = false;
+                bool accepted = false;
 
-                while (true)
+                while (!accepted)
                 {
                     using (Transaction trans = new Transaction(doc, "MEP分组排序对齐"))
                     {
@@ -171,30 +173,85 @@ namespace MEPTools.MEPGroupSortAlign
                         trans.Commit();
                     }
 
-                    TaskDialog td = new TaskDialog("MEP分组排序对齐 - 结果确认");
-                    td.MainInstruction = $"已按净间距 {spacingMM:0.##} mm 排列（共 {groups.Count} 组）";
-                    td.MainContent =
-                        "当前结果已应用到模型：\n\n" +
-                        "· 按 ESC 或关闭对话框 → 接受当前结果\n" +
-                        "· 按空格 / 回车，或点击下方按钮 → 反向排列";
-                    td.AddCommandLink(TaskDialogCommandLinkId.CommandLink1,
-                        "反向排列", "以相反方向重新排列");
-                    td.CommonButtons = TaskDialogCommonButtons.None;
-                    td.AllowCancellation = true;
-
-                    TaskDialogResult res = td.Show();
-
-                    if (res == TaskDialogResult.CommandLink1)
+                    // 使用 WinForms 自定义确认界面
+                    using (WinForms.Form form = new WinForms.Form())
                     {
-                        reversed = !reversed;
-                        continue;
+                        form.Text = "MEP分组排序对齐 - 结果确认";
+                        form.ClientSize = new Size(340, 160);
+                        form.StartPosition = WinForms.FormStartPosition.CenterScreen;
+                        form.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog;
+                        form.MaximizeBox = false;
+                        form.MinimizeBox = false;
+                        form.ShowInTaskbar = false;
+                        form.KeyPreview = true; 
+
+                        WinForms.Label lbl = new WinForms.Label
+                        {
+                            Text = $"已按净间距 {spacingMM:0.##} mm 排列（共 {groups.Count} 组）。\n\n" +
+                                   "· 按空格键 / 回车键 → 反向排列\n" +
+                                   "· 按ESC键 / 点击“完成” → 接受当前结果",
+                            Location = new Point(15, 15),
+                            AutoSize = true
+                        };
+
+                        WinForms.Button reverseBtn = new WinForms.Button
+                        {
+                            Text = "反向排列",
+                            Location = new Point(135, 105),
+                            Width = 80,
+                            DialogResult = WinForms.DialogResult.Retry
+                        };
+
+                        WinForms.Button okBtn = new WinForms.Button
+                        {
+                            Text = "完成",
+                            Location = new Point(225, 105),
+                            Width = 80,
+                            DialogResult = WinForms.DialogResult.OK
+                        };
+
+                        form.Controls.Add(lbl);
+                        form.Controls.Add(reverseBtn);
+                        form.Controls.Add(okBtn);
+
+                        // ===== 核心逻辑修改 =====
+                        // 1. 默认回车键 -> 触发“反向排列”
+                        form.AcceptButton = reverseBtn; 
+                        // 2. 默认 ESC 键 -> 触发“完成” (因为 OkBtn.DialogResult 为 OK)
+                        form.CancelButton = okBtn; 
+                        // 3. 默认焦点在“反向排列”上（如果用户直接按空格触发）
+                        form.ActiveControl = reverseBtn; 
+
+                        // 4. 捕获空格键，强制绑定给“反向排列”
+                        form.KeyDown += (s, e) =>
+                        {
+                            if (e.KeyCode == WinForms.Keys.Space)
+                            {
+                                form.DialogResult = WinForms.DialogResult.Retry;
+                                form.Close();
+                            }
+                        };
+
+                        WinForms.DialogResult res = form.ShowDialog();
+
+                        if (res == WinForms.DialogResult.Retry)
+                        {
+                            reversed = !reversed;
+                            MEPLogger.Instance.AppendLine("用户选择了反向排列。");
+                        }
+                        else
+                        {
+                            accepted = true;
+                            MEPLogger.Instance.AppendLine("用户接受了当前排列结果。");
+                        }
                     }
-                    break;
                 }
 
                 tg.Assimilate();
             }
 
+            InfoCenterTip.Show("MEP分组排序对齐完成");
+            MEPLogger.Instance.EndSession("Success: Alignment completed.");
             return Result.Succeeded;
         }
 
@@ -219,9 +276,6 @@ namespace MEPTools.MEPGroupSortAlign
             return null;
         }
 
-        /// <summary>
-        /// 按底部标高升序分组。容差 = min(默认 25mm, 最小元素尺寸)。
-        /// </summary>
         private static List<MepGroup> GroupByBottomElevation(List<Element> elements)
         {
             double minSizeMM = elements
@@ -268,12 +322,13 @@ namespace MEPTools.MEPGroupSortAlign
             using (WinForms.Form form = new WinForms.Form())
             {
                 form.Text = title;
-                form.ClientSize = new Size(300, 130);
+                form.ClientSize = new Size(320, 140);
                 form.StartPosition = WinForms.FormStartPosition.CenterScreen;
                 form.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog;
                 form.MaximizeBox = false;
                 form.MinimizeBox = false;
                 form.ShowInTaskbar = false;
+                form.KeyPreview = true;
 
                 WinForms.Label lbl = new WinForms.Label
                 {
@@ -285,15 +340,15 @@ namespace MEPTools.MEPGroupSortAlign
                 WinForms.TextBox txt = new WinForms.TextBox
                 {
                     Text = defaultValue.ToString("0.##"),
-                    Location = new Point(18, 45),
-                    Width = 260
+                    Location = new Point(18, 50),
+                    Width = 280
                 };
                 txt.SelectAll();
 
                 WinForms.Button okBtn = new WinForms.Button
                 {
-                    Text = "确定",
-                    Location = new Point(115, 85),
+                    Text = "完成",
+                    Location = new Point(130, 90),
                     Width = 75,
                     DialogResult = WinForms.DialogResult.OK
                 };
@@ -301,7 +356,7 @@ namespace MEPTools.MEPGroupSortAlign
                 WinForms.Button cancelBtn = new WinForms.Button
                 {
                     Text = "取消",
-                    Location = new Point(200, 85),
+                    Location = new Point(215, 90),
                     Width = 75,
                     DialogResult = WinForms.DialogResult.Cancel
                 };
@@ -313,6 +368,15 @@ namespace MEPTools.MEPGroupSortAlign
                 form.AcceptButton = okBtn;
                 form.CancelButton = cancelBtn;
                 form.ActiveControl = txt;
+
+                form.KeyDown += (s, e) =>
+                {
+                    if (e.KeyCode == WinForms.Keys.Space)
+                    {
+                        form.DialogResult = WinForms.DialogResult.OK;
+                        form.Close();
+                    }
+                };
 
                 WinForms.DialogResult dr = form.ShowDialog();
 

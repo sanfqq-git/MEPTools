@@ -96,8 +96,8 @@ namespace MEPTools.MEPHighLowConnector
             _log.AppendLine("  P_B = " + MEPConnectorCalculator.Fmt(g.PB));
             _log.AppendLine("  B 远端 = " + MEPConnectorCalculator.Fmt(g.BFarPt));
 
-            if (g.PB.DistanceTo(g.BFarPt) < 1e-4)
-            { _log.AppendLine("✗ P_B 与 B 组管远端重合"); return false; }
+            double horizontalDist = new XYZ(g.PA.X - g.PB.X, g.PA.Y - g.PB.Y, 0).GetLength();
+            double tolDist = UnitUtils.ConvertToInternalUnits(1.0, UnitTypeId.Millimeters); // 1mm容差
 
             // ---- 修改 B 组管端点：靠 A 组的端点 → P_B ----
             var bCurve = (b as MEPCurve)?.Location as LocationCurve;
@@ -116,7 +116,6 @@ namespace MEPTools.MEPHighLowConnector
             if (bNear.IsAlmostEqualTo(b0)) { newStart = g.PB; newEnd = bFar; }
             else { newStart = bFar; newEnd = g.PB; }
 
-            // 【保护机制】防止修改后 B 管长度过短（小于 10mm）导致 Revit 抛出异常
             double minLength = UnitUtils.ConvertToInternalUnits(10.0, UnitTypeId.Millimeters);
             if (newStart.DistanceTo(newEnd) < minLength)
             { 
@@ -134,16 +133,49 @@ namespace MEPTools.MEPHighLowConnector
             catch (Exception ex)
             { _log.AppendLine("✗ 修改 B 组管失败：" + ex.Message); return false; }
 
-            // ---- 创建斜段（用 A 组管类型）----
+            // ---- 创建过渡管（用 A 组管类型）----
             var snap = CaptureSnapshot(a);
             Element ramp = CreateMEPCurve(doc, snap, g.PA, g.PB);
-            if (ramp == null) { _log.AppendLine("✗ 斜段创建失败"); return false; }
+            if (ramp == null) { _log.AppendLine("✗ 过渡管创建失败"); return false; }
+            
+            // =========================================================
+            // 【核心修复】：90 度防扭曲处理（使用旋转，而不是修改参数）
+            // =========================================================
+            if (horizontalDist < tolDist && (ramp is Duct || ramp is CableTray))
+            {
+                Connector ca = GetConnectorAtPoint(a, g.PA);
+                if (ca != null)
+                {
+                    XYZ basisX = ca.CoordinateSystem.BasisX;
+                    
+                    // 如果 A 管端面的局部 X 轴（宽度方向）更倾向于全局 Y 轴
+                    // 这意味着垂直管的默认宽（全局 X 轴）与它垂直，必须旋转 90 度
+                    if (Math.Abs(basisX.Y) > Math.Abs(basisX.X))
+                    {
+                        _log.AppendLine("  [INFO] 检测到 90 度垂直过渡管宽高方向反置，执行旋转以避免穿模。");
+                        
+                        try
+                        {
+                            // 绕着垂直管的轴线（Z轴）原地旋转 90 度
+                            Line axis = Line.CreateUnbound(g.PA, XYZ.BasisZ);
+                            ElementTransformUtils.RotateElement(doc, ramp.Id, axis, Math.PI / 2);
+                            _log.AppendLine("  ✓ 垂直过渡管已原地旋转 90 度以对齐截面");
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.AppendLine("  ✗ 旋转过渡管失败：" + ex.Message);
+                        }
+                    }
+                }
+            }
+
             doc.Regenerate();
-            _log.AppendLine("  ✓ 斜段 ID=" + ramp.Id.IntegerValue);
+            _log.AppendLine("  ✓ 过渡管 ID=" + ramp.Id.IntegerValue);
 
             // ---- 2 个弯头 ----
-            TryCreateElbow(doc, aId, ramp.Id, g.PA, "弯头1(A-斜段)");
-            TryCreateElbow(doc, ramp.Id, bId, g.PB, "弯头2(斜段-B)");
+            bool ok1 = TryCreateElbow(doc, aId, ramp.Id, g.PA, "弯头1(A-过渡管)");
+            if (ok1) doc.Regenerate(); // 连完第一个后刷新，避免 Revit 方向判断异常
+            TryCreateElbow(doc, ramp.Id, bId, g.PB, "弯头2(过渡管-B)");
 
             return true;
         }
@@ -236,7 +268,10 @@ namespace MEPTools.MEPHighLowConnector
                 return true;
             }
             catch (Exception ex)
-            { _log.AppendLine("✗ " + tag + ": " + ex.Message); return false; }
+            {
+                _log.AppendLine($"✗ {tag} 底层连接失败: {ex.Message}");
+                return false; 
+            }
         }
 
         private Connector GetConnectorAtPoint(Element elem, XYZ pt)

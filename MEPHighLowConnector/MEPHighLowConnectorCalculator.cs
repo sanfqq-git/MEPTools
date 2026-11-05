@@ -14,7 +14,7 @@ namespace MEPTools.MEPHighLowConnector
         public ElementId AId { get; set; }
         public ElementId BId { get; set; }
         public double Distance { get; set; }
-        public bool IsCollinear { get; set; } // 新增：记录该配对是否共线
+        public bool IsCollinear { get; set; }
     }
 
     public class PairGeometry
@@ -46,7 +46,6 @@ namespace MEPTools.MEPHighLowConnector
             return lc?.Curve as Line;
         }
 
-        /// <summary>水平投影是否共线（平行 + 位置共线）</summary>
         public static bool IsHorizontallyCollinear(Element a, Element b, out string reason)
         {
             reason = null;
@@ -61,17 +60,14 @@ namespace MEPTools.MEPHighLowConnector
             da = da.Normalize();
             db = db.Normalize();
 
-            // 平行检查（增加容差，允许极微小偏差）
             double cross = da.X * db.Y - da.Y * db.X;
             if (Math.Abs(cross) > 1e-2) { reason = "两管水平投影不平行"; return false; }
 
-            // 共线检查：B 起点到 A 轴线的水平距离
             XYZ sa = la.GetEndPoint(0);
             XYZ sb = lb.GetEndPoint(0);
             XYZ ab = new XYZ(sb.X - sa.X, sb.Y - sa.Y, 0);
             double perpDist = Math.Abs(ab.X * da.Y - ab.Y * da.X);
             
-            // 【核心修复】将容差从 5mm 放宽到 50mm，解决由于建模不对齐导致的误报
             double tol = UnitUtils.ConvertToInternalUnits(50.0, UnitTypeId.Millimeters);
             if (perpDist > tol)
             {
@@ -81,68 +77,78 @@ namespace MEPTools.MEPHighLowConnector
             return true;
         }
 
-        /// <summary>System Type 一致</summary>
         public static bool HasCompatibleSystemType(Element a, Element b, out string reason)
         {
             reason = null;
             var ta = GetElementType(a);
             var tb = GetElementType(b);
-            if (ta != tb) { reason = string.Format("类型不一致：{0} vs {1}", ta, tb); return false; }
+            if (ta != tb) { reason = string.Format("类型大类不一致：{0} vs {1}", ta, tb); return false; }
             if (ta == MEPElementType.CableTray) return true;
 
             ElementId sysA = GetSystemTypeId(a, ta);
             ElementId sysB = GetSystemTypeId(b, tb);
             
-            // 如果获取不到系统类型（可能是全局或未设置），放行交给 Revit 底层连接器判断
             if (sysA == ElementId.InvalidElementId || sysB == ElementId.InvalidElementId) return true;
             
-            if (sysA != sysB) { reason = "System Type 不一致"; return false; }
+            if (sysA != sysB) 
+            {
+                string nameA = a.Document.GetElement(sysA)?.Name ?? "未知";
+                string nameB = b.Document.GetElement(sysB)?.Name ?? "未知";
+                reason = $"System Type 不一致！A: '{nameA}' vs B: '{nameB}'"; 
+                return false;
+            }
             return true;
         }
 
         public static ElementId GetSystemTypeId(Element elem, MEPElementType t)
         {
-            if (t == MEPElementType.Pipe && elem is Pipe p)
+            try
             {
-                var pp = p.get_Parameter(BuiltInParameter.RBS_PIPING_SYSTEM_TYPE_PARAM);
-                return pp != null ? pp.AsElementId() : ElementId.InvalidElementId;
+                if (t == MEPElementType.Pipe && elem is Pipe p)
+                {
+                    var pp = p.get_Parameter(BuiltInParameter.RBS_PIPING_SYSTEM_TYPE_PARAM);
+                    return pp != null ? pp.AsElementId() : ElementId.InvalidElementId;
+                }
+                if (t == MEPElementType.Duct && elem is Duct d)
+                {
+                    var pp = d.get_Parameter(BuiltInParameter.RBS_DUCT_SYSTEM_TYPE_PARAM);
+                    return pp != null ? pp.AsElementId() : ElementId.InvalidElementId;
+                }
             }
-            if (t == MEPElementType.Duct && elem is Duct d)
-            {
-                var pp = d.get_Parameter(BuiltInParameter.RBS_DUCT_SYSTEM_TYPE_PARAM);
-                return pp != null ? pp.AsElementId() : ElementId.InvalidElementId;
-            }
+            catch { }
             return ElementId.InvalidElementId;
         }
 
-        /// <summary>
-        /// 【核心修复】贪心配对：
-        /// 1. 优先匹配水平投影共线的元素；
-        /// 2. 其次按管中点水平距离最近优先。
-        /// </summary>
         public static List<ConnectorPair> MatchPairs(List<Element> aList, List<Element> bList)
         {
             var candidates = new List<ConnectorPair>();
             foreach (var a in aList)
             {
+                var typeA = GetElementType(a);
+                var sysA = GetSystemTypeId(a, typeA);
                 Line la = GetAxisLine(a);
                 if (la == null) continue;
                 XYZ ma = (la.GetEndPoint(0) + la.GetEndPoint(1)) * 0.5;
 
                 foreach (var b in bList)
                 {
+                    var typeB = GetElementType(b);
+                    var sysB = GetSystemTypeId(b, typeB);
+
+                    if (sysA != ElementId.InvalidElementId && sysB != ElementId.InvalidElementId)
+                    {
+                        if (sysA != sysB) continue;
+                    }
+
                     Line lb = GetAxisLine(b);
                     if (lb == null) continue;
                     XYZ mb = (lb.GetEndPoint(0) + lb.GetEndPoint(1)) * 0.5;
 
-                    // 计算中点水平距离
                     double d = new XYZ(ma.X - mb.X, ma.Y - mb.Y, 0).GetLength();
                     
-                    // 判断是否共线
                     string reason;
                     bool isCollinear = IsHorizontallyCollinear(a, b, out reason);
 
-                    // 如果不共线，加入极大的惩罚值（100000英尺），保证共线配对绝对排在前面
                     if (!isCollinear)
                     {
                         d += 100000.0; 
@@ -150,10 +156,7 @@ namespace MEPTools.MEPHighLowConnector
 
                     candidates.Add(new ConnectorPair 
                     { 
-                        AId = a.Id, 
-                        BId = b.Id, 
-                        Distance = d,
-                        IsCollinear = isCollinear 
+                        AId = a.Id, BId = b.Id, Distance = d, IsCollinear = isCollinear 
                     });
                 }
             }
@@ -173,7 +176,6 @@ namespace MEPTools.MEPHighLowConnector
             return pairs;
         }
 
-        /// <summary>计算单对连接几何</summary>
         public static PairGeometry ComputeGeometry(Element a, Element b, double thetaDeg)
         {
             var g = new PairGeometry { IsValid = false };
@@ -182,20 +184,17 @@ namespace MEPTools.MEPHighLowConnector
             Line lb = GetAxisLine(b);
             if (la == null || lb == null) { g.ErrorMessage = "非直线段"; return g; }
 
-            // A 组管端点：靠近 B 组管中点
             XYZ a0 = la.GetEndPoint(0);
             XYZ a1 = la.GetEndPoint(1);
             XYZ bMid = (lb.GetEndPoint(0) + lb.GetEndPoint(1)) * 0.5;
             XYZ pA = (a0.DistanceTo(bMid) < a1.DistanceTo(bMid)) ? a0 : a1;
 
-            // B 组管端点：靠近 A 组管中点
             XYZ b0 = lb.GetEndPoint(0);
             XYZ b1 = lb.GetEndPoint(1);
             XYZ aMid = (a0 + a1) * 0.5;
             XYZ bNear = (b0.DistanceTo(aMid) < b1.DistanceTo(aMid)) ? b0 : b1;
             XYZ bFar  = (bNear.IsAlmostEqualTo(b0)) ? b1 : b0;
 
-            // A→B 水平方向
             XYZ axisDir = new XYZ(bFar.X - bNear.X, bFar.Y - bNear.Y, 0);
             if (axisDir.GetLength() < 1e-9) { g.ErrorMessage = "方向无法确定"; return g; }
             axisDir = axisDir.Normalize();
@@ -203,17 +202,27 @@ namespace MEPTools.MEPHighLowConnector
             XYZ toB = new XYZ(bMid.X - pA.X, bMid.Y - pA.Y, 0);
             if (toB.DotProduct(axisDir) < 0) axisDir = -axisDir;
 
-            // 高度差
             double zB = bNear.Z;
             double dZ = pA.Z - zB;
             double absDz = Math.Abs(dZ);
-            if (absDz < 1e-6) { g.ErrorMessage = "A/B 组管高度相同，无法生成斜段"; return g; }
+            if (absDz < 1e-6) { g.ErrorMessage = "A/B 组管高度相同，无法生成斜段或垂直段"; return g; }
 
-            double thetaRad = thetaDeg * Math.PI / 180.0;
-            double tanTheta = Math.Tan(thetaRad);
-            if (tanTheta < 1e-6) { g.ErrorMessage = "角度过小"; return g; }
+            // ========================================================
+            // 【核心修复】：完美支持 90 度
+            // ========================================================
+            double dX;
+            if (thetaDeg >= 89.9) 
+            {
+                dX = 0; // 90度时，水平偏移直接归零，生成垂直管
+            }
+            else
+            {
+                double thetaRad = thetaDeg * Math.PI / 180.0;
+                double tanTheta = Math.Tan(thetaRad);
+                if (tanTheta < 1e-6) { g.ErrorMessage = "角度过小"; return g; }
+                dX = absDz / tanTheta;
+            }
 
-            double dX = absDz / tanTheta;
             XYZ pB = new XYZ(pA.X + axisDir.X * dX, pA.Y + axisDir.Y * dX, zB);
 
             g.PA = pA;

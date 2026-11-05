@@ -8,6 +8,7 @@ using Autodesk.Revit.DB.Plumbing;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
 using MEPTools.Shared;
+using WinForms = System.Windows.Forms;
 
 using Connector = Autodesk.Revit.DB.Connector;
 
@@ -30,7 +31,33 @@ namespace MEPTools.MEPHighLowConnector
 
             try
             {
-                // ---- 1. A 组：有预选用预选，无预选提示用户拾取 ----
+                // ==========================================
+                // 【修改点 1】：提示文案支持 90 度
+                // ==========================================
+                double angleDeg = DefaultAngleDeg;
+
+                if ((WinForms.Control.ModifierKeys & WinForms.Keys.Shift) == WinForms.Keys.Shift)
+                {
+                    string input = ShowInputBox("按住 Shift 唤起了自定义角度。\n请输入连接角度（1 ~ 90 度）：\n\n注：输入 90 度将直接垂直连接（无斜段）。", "MEP 斜段连接角度", DefaultAngleDeg.ToString());
+
+                    if (input == null) return Result.Cancelled; // 用户点了取消
+
+                    // ==========================================
+                    // 【修改点 2】：允许等于 90 度
+                    // ==========================================
+                    if (!double.TryParse(input, out angleDeg) || angleDeg < 1.0 || angleDeg > 90.0)
+                    {
+                        message = "输入的角度无效，请输入 1 到 90 之间的数字。";
+                        InfoCenterTip.Show("角度输入无效，已取消");
+                        return Result.Failed;
+                    }
+                    log.AppendLine($"用户自定义连接角度：{angleDeg}°");
+                }
+                else
+                {
+                    log.AppendLine($"使用默认连接角度：{angleDeg}°");
+                }
+
                 var aList = GetPreselectedCurves(uiDoc, doc);
                 if (aList.Count > 0)
                 {
@@ -51,7 +78,6 @@ namespace MEPTools.MEPHighLowConnector
                     return Result.Failed;
                 }
 
-                // ---- 2. B 组：始终拾取（空格键确认） ----
                 InfoCenterTip.Show("请选择 B 组元素（按空格确认）");
                 var bList = PickCurves(uiDoc, "请选择 B 组元素（可框选多个，按空格确认）");
                 if (bList.Count < 1)
@@ -62,7 +88,6 @@ namespace MEPTools.MEPHighLowConnector
                 }
                 log.AppendLine($"B 组数量：{bList.Count}");
 
-                // ---- 3. 数量校验 ----
                 if (aList.Count != bList.Count)
                 {
                     message = string.Format("A 组 ({0}) 与 B 组 ({1}) 数量不一致", aList.Count, bList.Count);
@@ -70,7 +95,6 @@ namespace MEPTools.MEPHighLowConnector
                     return Result.Failed;
                 }
 
-                // ---- 4. 配对 ----
                 var aElems = new List<Element>();
                 foreach (var id in aList) aElems.Add(doc.GetElement(id));
                 var bElems = new List<Element>();
@@ -78,7 +102,13 @@ namespace MEPTools.MEPHighLowConnector
 
                 var pairs = MEPConnectorCalculator.MatchPairs(aElems, bElems);
 
-                // ---- 5. 逐对校验 ----
+                if (pairs.Count == 0)
+                {
+                    message = "找不到系统类型一致的配对。请检查 A/B 组是否存在相同的 System Type。";
+                    InfoCenterTip.Show("配对失败：没有系统类型一致的管道");
+                    return Result.Failed;
+                }
+
                 int idx = 0;
                 foreach (var p in pairs)
                 {
@@ -105,10 +135,8 @@ namespace MEPTools.MEPHighLowConnector
                 }
                 log.AppendLine("\n所有配对通过共线/系统类型校验");
 
-                // ---- 6. 处理 ----
-                InfoCenterTip.Show($"开始处理 {pairs.Count} 对连接（角度 {DefaultAngleDeg:F0}°）");
-                log.AppendLine("角度 θ = " + DefaultAngleDeg.ToString("F1") + "°");
-
+                InfoCenterTip.Show($"开始处理 {pairs.Count} 对连接（角度 {angleDeg:F0}°）");
+                
                 int success = 0, fail = 0;
                 using (var tx = new Transaction(doc, "连接两组 MEP"))
                 {
@@ -118,7 +146,7 @@ namespace MEPTools.MEPHighLowConnector
                     {
                         try
                         {
-                            if (svc.ProcessPair(doc, p.AId, p.BId, DefaultAngleDeg)) success++;
+                            if (svc.ProcessPair(doc, p.AId, p.BId, angleDeg)) success++;
                             else fail++;
                         }
                         catch (Exception ex)
@@ -163,6 +191,34 @@ namespace MEPTools.MEPHighLowConnector
             }
         }
 
+        private static string ShowInputBox(string prompt, string title, string defaultValue)
+        {
+            using (var form = new WinForms.Form())
+            {
+                form.Text = title;
+                form.Width = 400;
+                form.Height = 220; // 稍微加高一点，容纳说明文字
+                form.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog;
+                form.StartPosition = WinForms.FormStartPosition.CenterScreen;
+                form.MaximizeBox = false;
+                form.MinimizeBox = false;
+
+                var label = new WinForms.Label() { Left = 20, Top = 20, Text = prompt, Width = 350, Height = 60 };
+                var textBox = new WinForms.TextBox() { Left = 20, Top = 90, Width = 340, Text = defaultValue };
+                var btnOk = new WinForms.Button() { Text = "确定", Left = 200, Width = 80, Top = 130, DialogResult = WinForms.DialogResult.OK };
+                var btnCancel = new WinForms.Button() { Text = "取消", Left = 290, Width = 80, Top = 130, DialogResult = WinForms.DialogResult.Cancel };
+
+                form.Controls.Add(label);
+                form.Controls.Add(textBox);
+                form.Controls.Add(btnOk);
+                form.Controls.Add(btnCancel);
+                form.AcceptButton = btnOk;
+                form.CancelButton = btnCancel;
+
+                return form.ShowDialog() == WinForms.DialogResult.OK ? textBox.Text : null;
+            }
+        }
+
         private static List<ElementId> GetPreselectedCurves(UIDocument uiDoc, Document doc)
         {
             var list = new List<ElementId>();
@@ -181,7 +237,7 @@ namespace MEPTools.MEPHighLowConnector
             var list = new List<ElementId>();
             try
             {
-                using (var finisher = new SpaceKeyFinisher(System.Windows.Forms.Keys.Space, "完成", "Finish"))
+                using (var finisher = new SpaceKeyFinisher(WinForms.Keys.Space, "完成", "Finish"))
                 {
                     finisher.Enable();
                     var refs = uiDoc.Selection.PickObjects(ObjectType.Element, new MEPCurveSelectionFilter(), prompt);
