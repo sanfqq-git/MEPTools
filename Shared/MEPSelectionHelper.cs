@@ -4,16 +4,12 @@ using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
-using Autodesk.Revit.Exceptions; // ⭐ 必须引入这个命名空间以捕获 Revit 专属的取消异常
+using Autodesk.Revit.Exceptions;
 
 namespace MEPTools.Shared
 {
     public static class MEPSelectionHelper
     {
-        /// <summary>
-        /// 智能获取元素（有预选直接返回，无预选则 InfoCenter 提示并使用空格键交互选择）
-        /// </summary>
-        /// <param name="singlePick">是否限制只能单选（默认 false 为多选）</param>
         public static List<Element> GetElements(
             UIDocument uidoc,
             ISelectionFilter filter,
@@ -21,7 +17,7 @@ namespace MEPTools.Shared
             string infoTipNoPreselection = "请在视图中选择元素，按空格键结束",
             int minCount = 1,
             bool useSpaceKey = true,
-            bool singlePick = false) // ⭐ 新增参数
+            bool singlePick = false)
         {
             Document doc = uidoc.Document;
             List<Element> result = new List<Element>();
@@ -30,15 +26,27 @@ namespace MEPTools.Shared
             ICollection<ElementId> selectedIds = uidoc.Selection.GetElementIds();
             if (selectedIds != null && selectedIds.Count > 0)
             {
+                // 记录预选总数，用于后续判断是否被过滤
+                int originalCount = selectedIds.Count;
+                
                 result = selectedIds
                     .Select(id => doc.GetElement(id))
-                    .Where(e => e != null && (filter == null || filter.AllowElement(e)))
+                    .Where(e => e != null && (filter == null || SafeAllowElement(filter, e)))
                     .ToList();
-                    
-                // 如果是单选模式且有预选，只取第一个
+
+                // 【优化1】提示用户预选被过滤的情况
+                if (result.Count < originalCount)
+                {
+                    InfoCenterTip.Show($"已忽略 {originalCount - result.Count} 个不符合要求的元素");
+                    MEPLogger.Instance.AppendLine($"预选过滤：原始 {originalCount}，有效 {result.Count}。");
+                }
+
+                // 【优化2】单选模式下，如果预选多个，拦截并提示
                 if (singlePick && result.Count > 1)
                 {
-                    result = new List<Element> { result.First() };
+                    InfoCenterTip.Show("当前操作仅支持单选，请只选择一个元素后重试");
+                    MEPLogger.Instance.EndSession("Failed: Multiple preselection in single pick mode.");
+                    return new List<Element>();
                 }
             }
 
@@ -50,8 +58,7 @@ namespace MEPTools.Shared
 
                 try
                 {
-                    // 单选通常不需要空格确认，点完即结束
-                    if (useSpaceKey && !singlePick) 
+                    if (useSpaceKey && !singlePick)
                     {
                         using (var finisher = new SpaceKeyFinisher())
                         {
@@ -64,11 +71,19 @@ namespace MEPTools.Shared
                         result = DoPickObjects(uidoc, filter, pickPrompt, doc, singlePick);
                     }
                 }
-                catch (Autodesk.Revit.Exceptions.OperationCanceledException) // ⭐ 准确捕获 Revit 的取消异常
+                catch (Autodesk.Revit.Exceptions.OperationCanceledException)
                 {
                     InfoCenterTip.Show("操作已取消");
                     MEPLogger.Instance.EndSession("Cancelled by user.");
-                    return new List<Element>(); // 返回空代表取消
+                    return new List<Element>();
+                }
+                catch (Exception ex)
+                {
+                    // 【优化3】拦截选择过程中的未知异常，防止直接崩溃
+                    MEPLogger.Instance.LogException("MEPSelectionHelper.DoPickObjects", ex);
+                    InfoCenterTip.Show("选择过程中发生错误，请查看日志");
+                    MEPLogger.Instance.EndSession("Failed: " + ex.Message);
+                    return new List<Element>();
                 }
             }
 
@@ -87,15 +102,27 @@ namespace MEPTools.Shared
         {
             if (singlePick)
             {
-                // 单选逻辑
                 Reference reference = uidoc.Selection.PickObject(ObjectType.Element, filter, prompt);
                 return new List<Element> { doc.GetElement(reference.ElementId) };
             }
             else
             {
-                // 多选逻辑
                 IList<Reference> refs = uidoc.Selection.PickObjects(ObjectType.Element, filter, prompt);
                 return refs.Select(r => doc.GetElement(r.ElementId)).ToList();
+            }
+        }
+
+        // 【优化4】安全地调用过滤器的 AllowElement，防止过滤器内部报错导致整个程序崩溃
+        private static bool SafeAllowElement(ISelectionFilter filter, Element elem)
+        {
+            try
+            {
+                return filter.AllowElement(elem);
+            }
+            catch (Exception ex)
+            {
+                MEPLogger.Instance.AppendLine($"[Filter Error] 过滤器检查元素 {elem?.Id} 时出错: {ex.Message}");
+                return false;
             }
         }
     }

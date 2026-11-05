@@ -17,7 +17,6 @@ namespace MEPTools.WorksetManager
 
             MEPLogger.Instance.StartSession("修改元素工作集");
 
-            // 1. 检查工作共享状态
             if (!doc.IsWorkshared)
             {
                 InfoCenterTip.Show("当前文档未开启工作共享，无法修改工作集");
@@ -27,7 +26,7 @@ namespace MEPTools.WorksetManager
 
             try
             {
-                // 2. 获取元素（自动处理预选和空格键交互）
+                // 1. 获取元素
                 var filter = new MEPElementSelectionFilter();
                 List<Element> selectedElements = MEPSelectionHelper.GetElements(
                     uidoc,
@@ -38,41 +37,69 @@ namespace MEPTools.WorksetManager
                     useSpaceKey: true
                 );
 
-                if (selectedElements.Count == 0)
+                if (selectedElements == null || selectedElements.Count == 0)
                 {
                     return Result.Cancelled;
                 }
 
-                // 3. 获取当前活动工作集
+                // 2. 获取当前活动工作集
                 WorksetId activeWorksetId = doc.GetWorksetTable().GetActiveWorksetId();
                 Workset activeWorkset = doc.GetWorksetTable().GetWorkset(activeWorksetId);
 
                 int successCount = 0;
                 int failCount = 0;
+                int skipCount = 0; // ⭐ 新增：记录原本就在当前工作集的元素数量
 
-                // 4. 开启事务修改工作集
+                // 3. 开启事务修改工作集
                 using (Transaction trans = new Transaction(doc, "修改元素工作集"))
                 {
                     trans.Start();
                     foreach (Element elem in selectedElements)
                     {
                         Parameter param = elem.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
-                        if (param != null && !param.IsReadOnly)
+                        
+                        if (param == null || param.IsReadOnly)
                         {
-                            param.Set(activeWorksetId.IntegerValue);
+                            failCount++;
+                            string reason = param == null ? "参数不存在" : "参数只读";
+                            MEPLogger.Instance.AppendLine($"元素 {elem.Id} 无法修改工作集（{reason}）。");
+                            continue;
+                        }
+
+                        // ⭐ 关键优化：获取元素当前的工作集 ID，若与目标一致，则直接跳过
+                        int currentWorksetIntId = param.AsInteger();
+                        if (currentWorksetIntId == activeWorksetId.IntegerValue)
+                        {
+                            skipCount++;
+                            continue;
+                        }
+
+                        // 只有在工作集不同时才执行 Set
+                        if (param.Set(activeWorksetId.IntegerValue))
+                        {
                             successCount++;
                         }
                         else
                         {
                             failCount++;
-                            MEPLogger.Instance.AppendLine($"元素 {elem.Id} 无法修改工作集（参数只读或无权限）。");
+                            MEPLogger.Instance.AppendLine($"元素 {elem.Id} 无法修改工作集（Set返回False）。");
                         }
                     }
-                    trans.Commit();
+                    
+                    // 检查事务是否成功提交
+                    if (trans.Commit() != TransactionStatus.Committed)
+                    {
+                        successCount = 0;
+                        failCount = selectedElements.Count;
+                        skipCount = 0;
+                        InfoCenterTip.Show("事务提交失败，所有修改已回滚");
+                        MEPLogger.Instance.AppendLine("Transaction Commit Failed.");
+                    }
                 }
 
-                // 5. 结果反馈
-                string resultMsg = $"已成功将 {successCount} 个元素修改为【{activeWorkset.Name}】";
+                // 4. 结果反馈
+                string resultMsg = $"成功修改 {successCount} 个元素为【{activeWorkset.Name}】";
+                if (skipCount > 0) resultMsg += $"，跳过 {skipCount} 个(已在该工作集)";
                 if (failCount > 0) resultMsg += $"，{failCount} 个失败";
                 
                 InfoCenterTip.Show(resultMsg);

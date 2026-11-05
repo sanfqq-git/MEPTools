@@ -7,9 +7,15 @@ using System.Windows.Forms;
 namespace MEPTools.Shared
 {
     /// <summary>
-    /// 监听指定按键，按下时自动点击 Revit 当前模态对话框中的“完成”按钮。
-    /// 使用系统级 RegisterHotKey 替代全局钩子，彻底避免多插件环境下的钩子冲突崩溃。
+    /// 运行级别枚举
     /// </summary>
+    public enum SpaceKeyLevel
+    {
+        None = 0,
+        Level1_WindowHook = 1, // 窗口消息拦截
+        Level2_HotKey = 2      // 系统热键
+    }
+
     public class SpaceKeyFinisher : IDisposable
     {
         private static class NativeMethods
@@ -28,16 +34,16 @@ namespace MEPTools.Shared
             [DllImport("user32.dll", EntryPoint = "SendMessage")]
             public static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
-            // ================= 新增 HotKey API =================
             [DllImport("user32.dll", SetLastError = true)]
             public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
 
             [DllImport("user32.dll", SetLastError = true)]
             public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
-            // ====================================================
 
             public const uint BM_CLICK = 0x00F5;
-            public const int WM_HOTKEY = 0x0312; // 热键消息标识
+            public const int WM_HOTKEY = 0x0312;
+            public const int WM_KEYDOWN = 0x0100;
+            public const int WM_SYSKEYDOWN = 0x0104;
         }
 
         private readonly Keys _targetKey;
@@ -47,7 +53,14 @@ namespace MEPTools.Shared
         private HwndSource _hwndSource;
         private readonly int _hotKeyId;
         private bool _disposed;
-        private bool _isRegistered;
+        
+        private bool _isHookActive;
+        private bool _isHotKeyActive;
+
+        /// <summary>
+        /// 当前生效的级别（如果在 WndProc 里触发，可在此处得知来源）
+        /// </summary>
+        public SpaceKeyLevel ActiveLevel { get; private set; } = SpaceKeyLevel.None;
 
         public SpaceKeyFinisher(Keys targetKey = Keys.Space, params string[] buttonTexts)
         {
@@ -56,16 +69,14 @@ namespace MEPTools.Shared
                 ? buttonTexts
                 : new[] { "完成", "Finish", "Complete" };
             
-            // 为当前实例生成一个唯一的热键 ID，避免与其他插件冲突
             _hotKeyId = this.GetHashCode();
         }
 
         public void Enable()
         {
             if (_disposed) throw new ObjectDisposedException(nameof(SpaceKeyFinisher));
-            if (_isRegistered) return;
+            if (_isHookActive || _isHotKeyActive) return;
 
-            // 1. 获取 Revit 的主窗口句柄
             _revitWindowHandle = Autodesk.Windows.ComponentManager.ApplicationWindow;
             if (_revitWindowHandle == IntPtr.Zero) 
             {
@@ -73,31 +84,36 @@ namespace MEPTools.Shared
                 return;
             }
 
-            // 2. 注册系统热键
-            // fsModifiers = 0 表示无修饰键 (Ctrl/Alt/Shift)
+            // === 第一级：窗口消息拦截 (WM_KEYDOWN) ===
+            var source = HwndSource.FromHwnd(_revitWindowHandle);
+            if (source != null)
+            {
+                _hwndSource = source;
+                _hwndSource.AddHook(WndProc);
+                _isHookActive = true;
+                ActiveLevel = SpaceKeyLevel.Level1_WindowHook;
+                MEPLogger.Instance.AppendLine("[SpaceKeyFinisher] ✅ 第一级：窗口键盘消息拦截已启用。");
+            }
+
+            // === 第二级：系统热键兜底 ===
             bool registered = NativeMethods.RegisterHotKey(
                 _revitWindowHandle, 
                 _hotKeyId, 
                 0, 
                 (uint)_targetKey);
 
-            if (!registered)
+            if (registered)
             {
-                MEPLogger.Instance.AppendLine($"[SpaceKeyFinisher] 注册热键失败。可能被其他程序占用。错误码: {Marshal.GetLastWin32Error()}");
-                return;
+                _isHotKeyActive = true;
+                // 如果一级没成功，二级作为主级别
+                if (!_isHookActive) ActiveLevel = SpaceKeyLevel.Level2_HotKey;
+                
+                MEPLogger.Instance.AppendLine("[SpaceKeyFinisher] ✅ 第二级：系统热键注册成功（作为兜底）。");
             }
-            _isRegistered = true;
-
-            // 3. 挂接窗口消息处理，用于接收 WM_HOTKEY
-            var source = HwndSource.FromHwnd(_revitWindowHandle);
-            if (source == null)
+            else
             {
-                MEPLogger.Instance.AppendLine("[SpaceKeyFinisher] 无法获取 HwndSource。");
-                Disable(); // 回滚注册
-                return;
+                MEPLogger.Instance.AppendLine($"[SpaceKeyFinisher] ⚠️ 第二级：注册系统热键失败(可能被占用)，完全依赖第一级。错误码: {Marshal.GetLastWin32Error()}");
             }
-            _hwndSource = source;
-            _hwndSource.AddHook(WndProc);
         }
 
         public void Disable()
@@ -105,52 +121,64 @@ namespace MEPTools.Shared
             if (_disposed) return;
             _disposed = true;
 
-            // 1. 移除窗口消息拦截
             if (_hwndSource != null)
             {
                 _hwndSource.RemoveHook(WndProc);
                 _hwndSource = null;
+                _isHookActive = false;
             }
 
-            // 2. 注销系统热键
-            if (_isRegistered && _revitWindowHandle != IntPtr.Zero)
+            if (_isHotKeyActive && _revitWindowHandle != IntPtr.Zero)
             {
                 NativeMethods.UnregisterHotKey(_revitWindowHandle, _hotKeyId);
-                _isRegistered = false;
+                _isHotKeyActive = false;
             }
 
             _revitWindowHandle = IntPtr.Zero;
+            ActiveLevel = SpaceKeyLevel.None;
         }
 
         public void Dispose() => Disable();
 
-        /// <summary>
-        /// 拦截窗口消息，处理热键触发
-        /// </summary>
         private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
-            if (msg == NativeMethods.WM_HOTKEY)
+            // 【级别 1】 窗口键盘消息触发
+            if (msg == NativeMethods.WM_KEYDOWN || msg == NativeMethods.WM_SYSKEYDOWN)
             {
-                // wParam 包含了触发的热键 ID
+                int vkCode = wParam.ToInt32();
+                if (vkCode == (int)_targetKey)
+                {
+                    bool isRepeat = (lParam.ToInt64() & (1 << 30)) != 0;
+                    if (!isRepeat)
+                    {
+                        OnKeyTriggered("第一级(窗口消息)");
+                        handled = true;
+                    }
+                }
+            }
+            // 【级别 2】 系统热键触发
+            else if (msg == NativeMethods.WM_HOTKEY)
+            {
                 if (wParam.ToInt32() == _hotKeyId)
                 {
-                    OnHotKeyPressed();
+                    OnKeyTriggered("第二级(系统热键)");
                     handled = true;
                 }
             }
+
             return IntPtr.Zero;
         }
 
-        private void OnHotKeyPressed()
+        private void OnKeyTriggered(string triggerSource)
         {
             try
             {
                 if (ClickRevitButton())
-                    MEPLogger.Instance.AppendLine("[SpaceKeyFinisher] 热键触发 → 已点击完成按钮。");
+                    MEPLogger.Instance.AppendLine($"[SpaceKeyFinisher] 触发按键 {_targetKey} → 来源: {triggerSource}，已点击完成按钮。");
             }
             catch (Exception ex)
             {
-                MEPLogger.Instance.LogException("SpaceKeyFinisher.OnHotKeyPressed", ex);
+                MEPLogger.Instance.LogException("SpaceKeyFinisher.OnKeyTriggered", ex);
             }
         }
 
@@ -175,7 +203,7 @@ namespace MEPTools.Shared
                     if (buttonText.Equals(candidate, StringComparison.Ordinal))
                     {
                         targetButton = hwnd;
-                        return false;   // 停止枚举
+                        return false;
                     }
                 }
                 return true;
