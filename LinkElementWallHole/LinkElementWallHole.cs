@@ -5,6 +5,7 @@ using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 using System.Runtime.InteropServices;
+using System.Drawing;
 using Autodesk.Revit.ApplicationServices;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
@@ -24,21 +25,19 @@ namespace MEPTools.LinkElementWallHole
     [Transaction(TransactionMode.Manual)]
     public class Command : IExternalCommand
     {
-        private double OFFSET_MM;
-        private string FAMILY_NAME;
-        private string SYMBOL_NAME;
-        private string LEVEL_NAME;
-        private double CABLE_TRAY_EXTRA_HEIGHT_MM;
+        // ==== 改为 public，方便设置窗体访问和修改 ====
+        public double OFFSET_MM;
+        public string FAMILY_NAME;
+        public string SYMBOL_NAME;
+        public string LEVEL_NAME;
+        public double CABLE_TRAY_EXTRA_HEIGHT_MM;
+        public string PARAM_WIDTH_NAME;
+        public string PARAM_HEIGHT_NAME;
+        public string PARAM_DEPTH_NAME;
+        public int TARGET_CATEGORY_ID;
+        public string TARGET_CATEGORY_NAME;
+        public double MATCH_TOLERANCE_MM;
 
-        // ==== 新增：参数名 / 类别外置（可切换族） ====
-        private string PARAM_WIDTH_NAME;
-        private string PARAM_HEIGHT_NAME;
-        private string PARAM_DEPTH_NAME;
-        private int TARGET_CATEGORY_ID;
-        private string TARGET_CATEGORY_NAME;
-        private double _matchToleranceMm;
-
-        private const double MATCH_TOLERANCE_MM = 300.0;
         private const double MM_PER_FOOT = HoleCalc.MM_PER_FOOT;
         private const double EPS = HoleCalc.EPS;
 
@@ -229,7 +228,6 @@ namespace MEPTools.LinkElementWallHole
             if (Math.Abs(wallDir.Z) > 0.01)
                 Log("[CreateNewHole] 警告：墙不是竖直的（wallDir.Z != 0），投影与插入点计算可能有偏差。");
 
-            // ============ 宽度用截面参数，高度用 8 角点投影 ============
             double minU = double.MaxValue, maxU = double.MinValue;
             double minZproj = double.MaxValue, maxZproj = double.MinValue;
             bool hasWidth = false;
@@ -309,48 +307,32 @@ namespace MEPTools.LinkElementWallHole
                 TaskDialog dialog = new TaskDialog("未找到墙洞族");
                 dialog.MainInstruction = "当前项目未找到配置文件中指定的墙洞族";
                 dialog.MainContent = $"配置指定的族：\n{FAMILY_NAME} - {SYMBOL_NAME}\n\n" +
-                                     "是否从当前项目中手动选择一个已有的墙洞实例作为模板？\n" +
-                                     "（选择后将自动更新 config.txt 配置）";
+                                     "是否立即打开设置界面，从当前项目的模型中选择正确的族？";
                 dialog.CommonButtons = TaskDialogCommonButtons.Yes | TaskDialogCommonButtons.No;
 
                 if (dialog.Show() == TaskDialogResult.Yes)
                 {
-                    try
+                    using (var form = new WallHoleConfigForm(doc, this))
                     {
-                        Reference pickedRef = uidoc.Selection.PickObject(
-                            ObjectType.Element,
-                            new HoleInstanceSelectionFilter(),
-                            $"请选择一个当前项目中的墙洞实例（建议类别：{TARGET_CATEGORY_NAME}）");
-
-                        FamilyInstance pickedInstance = doc.GetElement(pickedRef) as FamilyInstance;
-                        if (pickedInstance != null && pickedInstance.Symbol != null)
+                        if (form.ShowDialog() == DialogResult.OK)
                         {
-                            holeSymbol = pickedInstance.Symbol;
-                            FAMILY_NAME = holeSymbol.Family.Name;
-                            SYMBOL_NAME = holeSymbol.Name;
-
-                            // 类别不一致时警告但继续，并内存更新目标类别（不回写 config）
-                            int pickedCatId = pickedInstance.Category?.Id.IntegerValue ?? -1;
-                            if (pickedCatId != TARGET_CATEGORY_ID)
-                            {
-                                Log($"[CreateNewHole] 警告：所选族类别（ID={pickedCatId}）与配置 " +
-                                    $"{TARGET_CATEGORY_NAME}(ID={TARGET_CATEGORY_ID}) 不同，本次会话内存更新。");
-                                TARGET_CATEGORY_ID = pickedCatId;
-                                TARGET_CATEGORY_NAME = pickedInstance.Category?.Name ?? pickedCatId.ToString();
-                            }
-
-                            UpdateConfigFile(FAMILY_NAME, SYMBOL_NAME);
-                            Log($"[CreateNewHole] 用户手动指定族：{FAMILY_NAME} - {SYMBOL_NAME}，并已尝试更新 config.txt");
+                            holeSymbol = new FilteredElementCollector(doc)
+                                .OfClass(typeof(FamilySymbol))
+                                .Cast<FamilySymbol>()
+                                .FirstOrDefault(s => s.Family.Name == FAMILY_NAME && s.Name == SYMBOL_NAME);
+                            
+                            if (holeSymbol == null)
+                                throw new Exception("设置完成，但当前项目中仍然找不到选定的族，操作终止。");
                         }
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        throw new Exception("用户取消了墙洞族选择，操作结束。");
+                        else
+                        {
+                            throw new Exception("用户取消了设置，操作结束。");
+                        }
                     }
                 }
                 else
                 {
-                    throw new Exception($"未找到族：{FAMILY_NAME} - {SYMBOL_NAME}，且用户未手动选择。");
+                    throw new Exception($"未找到族：{FAMILY_NAME} - {SYMBOL_NAME}，且用户未进行设置。");
                 }
             }
 
@@ -370,7 +352,6 @@ namespace MEPTools.LinkElementWallHole
                     insertPt, holeSymbol, level,
                     Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
 
-                // 防呆：确保是可自由放置的基于标高/工作平面族
                 if (!(hole.Location is LocationPoint))
                 {
                     throw new Exception(
@@ -387,7 +368,6 @@ namespace MEPTools.LinkElementWallHole
                 FamilyInstance holeAfter = doc.GetElement(holeId) as FamilyInstance;
                 if (holeAfter == null) throw new Exception("创建后重新获取墙洞实例失败。");
 
-                // ==== 参数写入：使用配置名 + 检查返回值 ====
                 bool okDepth = HoleBiz.SetParam(holeAfter, PARAM_DEPTH_NAME, depth);
                 bool okWidth = HoleBiz.SetParam(holeAfter, PARAM_WIDTH_NAME, width);
                 bool okHeight = HoleBiz.SetParam(holeAfter, PARAM_HEIGHT_NAME, height);
@@ -396,7 +376,7 @@ namespace MEPTools.LinkElementWallHole
                 {
                     throw new Exception(
                         $"墙洞族缺少可写参数 '{PARAM_WIDTH_NAME}' 或 '{PARAM_HEIGHT_NAME}'" +
-                        $"（当前族：{FAMILY_NAME}-{SYMBOL_NAME}）。请检查 config.txt 第 6/7 行。");
+                        $"（当前族：{FAMILY_NAME}-{SYMBOL_NAME}）。请检查设置界面的参数名配置。");
                 }
                 if (!okDepth)
                 {
@@ -411,43 +391,6 @@ namespace MEPTools.LinkElementWallHole
 
             Log("[CreateNewHole] 创建成功。");
             return Result.Succeeded;
-        }
-
-        private void UpdateConfigFile(string familyName, string symbolName)
-        {
-            try
-            {
-                string dllPath = System.Reflection.Assembly.GetExecutingAssembly().Location;
-                string dir = System.IO.Path.GetDirectoryName(dllPath);
-                string path = System.IO.Path.Combine(dir, "config.txt");
-
-                if (System.IO.File.Exists(path))
-                {
-                    var lines = System.IO.File.ReadAllLines(path).ToList();
-                    var newLines = new List<string>();
-                    int validLineIndex = 0;
-
-                    foreach (var line in lines)
-                    {
-                        string trimmed = line.Trim();
-                        if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith("#"))
-                        {
-                            newLines.Add(line);
-                            continue;
-                        }
-                        // 只回写第 1、2 条有效行（族名/符号名），新增字段保持原样
-                        if (validLineIndex == 1) newLines.Add(familyName);
-                        else if (validLineIndex == 2) newLines.Add(symbolName);
-                        else newLines.Add(line);
-                        validLineIndex++;
-                    }
-                    System.IO.File.WriteAllLines(path, newLines);
-                }
-            }
-            catch (Exception ex)
-            {
-                MEPLogger.Instance.LogException("UpdateConfigFile", ex);
-            }
         }
 
         // ==========================================================
@@ -516,13 +459,10 @@ namespace MEPTools.LinkElementWallHole
                     {
                         relatedPipes = pipeElements;
                         Log($"[Update] 单洞强绑 {pipeElements.Count} 个 MEP → 洞 {hole.Id}。");
-                        foreach (var p in pipeElements)
-                            if (pipeOutlines.TryGetValue(p, out var o))
-                                Log($"[Update] 强绑成员 MEP {p.Id} {FmtOutline(o)}");
                     }
                     else
                     {
-                        relatedPipes = HoleBiz.MatchPipesToHole(hole, pipeOutlines, _matchToleranceMm);
+                        relatedPipes = HoleBiz.MatchPipesToHole(hole, pipeOutlines, MATCH_TOLERANCE_MM);
                         Log($"[Update] 洞 {hole.Id} 空间匹配到 {relatedPipes.Count} 个 MEP。");
                     }
 
@@ -587,15 +527,6 @@ namespace MEPTools.LinkElementWallHole
                         $"minZ={FmtMm(minZ)} maxZ={FmtMm(maxZ)} → " +
                         $"width={FmtMm(width)} height={FmtMm(height)} depth={FmtMm(depth)} trayExtra={FmtMm(trayExtra)}");
 
-                    if (holeRefs.Count == 1 && pipeElements.Count > 1)
-                    {
-                        double uSpan = (maxU - minU) * MM_PER_FOOT;
-                        double zSpan = (maxZ - minZ) * MM_PER_FOOT;
-                        if (uSpan > 3000 || zSpan > 3000)
-                            Log($"[Update] 警告：单洞强绑了跨度较大的 MEP（U跨度={uSpan:F0}mm Z跨度={zSpan:F0}mm），请核对洞口位置与尺寸是否符合预期。");
-                    }
-
-                    // ==== 参数写入：使用配置名 + 检查返回值 ====
                     bool okW = HoleBiz.SetParam(hole, PARAM_WIDTH_NAME, width);
                     bool okH = HoleBiz.SetParam(hole, PARAM_HEIGHT_NAME, height);
                     bool okD = HoleBiz.SetParam(hole, PARAM_DEPTH_NAME, depth);
@@ -630,11 +561,11 @@ namespace MEPTools.LinkElementWallHole
                 {
                     string paramDetail = paramWriteFailCount > 0
                         ? $"\n其中 {paramWriteFailCount} 个洞因族缺少可写参数 " +
-                          $"'{PARAM_WIDTH_NAME}' / '{PARAM_HEIGHT_NAME}' 而失败（请检查 config.txt 第 6/7 行及族参数名）。"
+                          $"'{PARAM_WIDTH_NAME}' / '{PARAM_HEIGHT_NAME}' 而失败（请检查族参数名）。"
                         : "";
                     throw new Exception(
                         $"未更新任何墙洞。\n" +
-                        $"可能原因：MEP 与墙洞空间不重叠（相距超过 {_matchToleranceMm:F0}mm），" +
+                        $"可能原因：MEP 与墙洞空间不重叠（相距超过 {MATCH_TOLERANCE_MM:F0}mm），" +
                         $"或所选元素非族 \"{FAMILY_NAME}\"。\n（跳过 {skippedNoMatch} 个）{paramDetail}");
                 }
                 Log($"[Update] 完成。共更新 {updated} 个，跳过 {skippedNoMatch} 个。");
@@ -643,9 +574,12 @@ namespace MEPTools.LinkElementWallHole
             return Result.Succeeded;
         }
 
-        private void LoadConfig()
+        // ==========================================================
+        // 配置读写（UI 界面调用）
+        // ==========================================================
+        public void LoadConfig()
         {
-            // ==== 先填入默认值（含向后兼容的 5 行与新增 4 行） ====
+            // ==== 默认值 ====
             OFFSET_MM = 100.0;
             FAMILY_NAME = "REWallHole";
             SYMBOL_NAME = "Rect CBWD for Wall";
@@ -656,7 +590,7 @@ namespace MEPTools.LinkElementWallHole
             PARAM_DEPTH_NAME = "NDH_Depth";
             TARGET_CATEGORY_ID = (int)BuiltInCategory.OST_GenericModel;
             TARGET_CATEGORY_NAME = "OST_GenericModel";
-            _matchToleranceMm = MATCH_TOLERANCE_MM;
+            MATCH_TOLERANCE_MM = 300.0;
 
             try
             {
@@ -666,25 +600,27 @@ namespace MEPTools.LinkElementWallHole
 
                 if (System.IO.File.Exists(path))
                 {
+                    // ⭐ 修复：完美剥离 # 及其后面的行尾注释
                     var validLines = System.IO.File.ReadAllLines(path)
-                        .Select(l => l.Trim())
-                        .Where(l => !string.IsNullOrEmpty(l) && !l.StartsWith("#"))
+                        .Select(l => 
+                        {
+                            int hashIdx = l.IndexOf('#');
+                            return hashIdx >= 0 ? l.Substring(0, hashIdx).Trim() : l.Trim();
+                        })
+                        .Where(l => !string.IsNullOrEmpty(l))
                         .ToList();
 
                     if (validLines.Count >= 5)
                     {
-                        OFFSET_MM = double.Parse(validLines[0]);
+                        if (double.TryParse(validLines[0], out double off)) OFFSET_MM = off;
                         FAMILY_NAME = validLines[1];
                         SYMBOL_NAME = validLines[2];
                         LEVEL_NAME = validLines[3];
-                        CABLE_TRAY_EXTRA_HEIGHT_MM = double.Parse(validLines[4]);
+                        if (double.TryParse(validLines[4], out double tray)) CABLE_TRAY_EXTRA_HEIGHT_MM = tray;
 
-                        if (validLines.Count > 5 && !string.IsNullOrEmpty(validLines[5]))
-                            PARAM_WIDTH_NAME = validLines[5];
-                        if (validLines.Count > 6 && !string.IsNullOrEmpty(validLines[6]))
-                            PARAM_HEIGHT_NAME = validLines[6];
-                        if (validLines.Count > 7 && !string.IsNullOrEmpty(validLines[7]))
-                            PARAM_DEPTH_NAME = validLines[7];
+                        if (validLines.Count > 5 && !string.IsNullOrEmpty(validLines[5])) PARAM_WIDTH_NAME = validLines[5];
+                        if (validLines.Count > 6 && !string.IsNullOrEmpty(validLines[6])) PARAM_HEIGHT_NAME = validLines[6];
+                        if (validLines.Count > 7 && !string.IsNullOrEmpty(validLines[7])) PARAM_DEPTH_NAME = validLines[7];
 
                         if (validLines.Count > 8 && !string.IsNullOrEmpty(validLines[8]))
                         {
@@ -694,18 +630,11 @@ namespace MEPTools.LinkElementWallHole
                                 TARGET_CATEGORY_ID = (int)bic;
                                 TARGET_CATEGORY_NAME = bic.ToString();
                             }
-                            else
-                            {
-                                Log($"[LoadConfig] 警告：无法解析 TARGET_CATEGORY='{catStr}'，回退 OST_GenericModel。");
-                            }
                         }
 
                         if (validLines.Count > 9)
                         {
-                            if (double.TryParse(validLines[9], out double tol) && tol > 0)
-                                _matchToleranceMm = tol;
-                            else
-                                Log($"[LoadConfig] 警告：MATCH_TOLERANCE_MM='{validLines[9]}' 无效，沿用 {_matchToleranceMm}mm。");
+                            if (double.TryParse(validLines[9], out double tol) && tol > 0) MATCH_TOLERANCE_MM = tol;
                         }
                     }
                 }
@@ -715,7 +644,7 @@ namespace MEPTools.LinkElementWallHole
                 MEPLogger.Instance.LogException("LoadConfig", ex);
             }
 
-            // ==== 后置兜底 ====
+            // ==== 兜底校验 ====
             if (OFFSET_MM <= 0) OFFSET_MM = 100.0;
             if (string.IsNullOrEmpty(FAMILY_NAME)) FAMILY_NAME = "REWallHole";
             if (string.IsNullOrEmpty(SYMBOL_NAME)) SYMBOL_NAME = "Rect CBWD for Wall";
@@ -724,10 +653,42 @@ namespace MEPTools.LinkElementWallHole
             if (string.IsNullOrEmpty(PARAM_HEIGHT_NAME)) PARAM_HEIGHT_NAME = "NDH_Height";
             if (string.IsNullOrEmpty(PARAM_DEPTH_NAME)) PARAM_DEPTH_NAME = "NDH_Depth";
 
-            Log($"[LoadConfig] OFFSET={OFFSET_MM}mm FAMILY='{FAMILY_NAME}' SYMBOL='{SYMBOL_NAME}' " +
-                $"LEVEL='{LEVEL_NAME}' TRAY_EXTRA={CABLE_TRAY_EXTRA_HEIGHT_MM}mm " +
-                $"PARAM_W='{PARAM_WIDTH_NAME}' PARAM_H='{PARAM_HEIGHT_NAME}' PARAM_D='{PARAM_DEPTH_NAME}' " +
-                $"CATEGORY='{TARGET_CATEGORY_NAME}' MATCH_TOL={_matchToleranceMm}mm");
+            Log($"[LoadConfig] 加载完毕: FAMILY='{FAMILY_NAME}' SYMBOL='{SYMBOL_NAME}' 类别='{TARGET_CATEGORY_NAME}'");
+        }
+
+        public void SaveConfigToFile()
+        {
+            try
+            {
+                string dllPath = System.Reflection.Assembly.GetExecutingAssembly().Location;
+                string dir = System.IO.Path.GetDirectoryName(dllPath);
+                string path = System.IO.Path.Combine(dir, "config.txt");
+
+                var lines = new List<string>
+                {
+                    "# ============================================================",
+                    "# MEPTools - 链接墙洞创建/更新 配置文件",
+                    "# 本文件已通过 UI 界面保存，推荐后续通过“设置”按钮修改",
+                    "# ============================================================",
+                    OFFSET_MM.ToString(),
+                    FAMILY_NAME,
+                    SYMBOL_NAME,
+                    LEVEL_NAME,
+                    CABLE_TRAY_EXTRA_HEIGHT_MM.ToString(),
+                    PARAM_WIDTH_NAME,
+                    PARAM_HEIGHT_NAME,
+                    PARAM_DEPTH_NAME,
+                    TARGET_CATEGORY_NAME,
+                    MATCH_TOLERANCE_MM.ToString()
+                };
+
+                System.IO.File.WriteAllLines(path, lines);
+                Log("[SaveConfig] 配置文件已成功更新。");
+            }
+            catch (Exception ex)
+            {
+                MEPLogger.Instance.LogException("SaveConfigToFile", ex);
+            }
         }
 
         // ============== 选择过滤器 ==============
@@ -767,17 +728,258 @@ namespace MEPTools.LinkElementWallHole
                        linkedElem.Category?.Id.IntegerValue == (int)BuiltInCategory.OST_Walls;
             }
         }
+    }
 
-        // ==== 用户手动选族：允许任意 FamilyInstance（类别不一致时 Log warning 并内存更新） ====
-        private class HoleInstanceSelectionFilter : ISelectionFilter
+    // ================================================================
+    // 【1.5】独立命令入口：打开设置界面 (用于挂载 Ribbon 按钮)
+    // ================================================================
+    [Transaction(TransactionMode.Manual)]
+    public class Cmd_WallHoleSettings : IExternalCommand
+    {
+        public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
         {
-            public bool AllowElement(Element elem) => elem is FamilyInstance;
-            public bool AllowReference(Reference reference, XYZ position) => true;
+            Document doc = commandData.Application.ActiveUIDocument.Document;
+            
+            // 实例化主命令以读取当前配置
+            var mainCmd = new Command();
+            mainCmd.LoadConfig();
+
+            using (var form = new WallHoleConfigForm(doc, mainCmd))
+            {
+                if (form.ShowDialog() == DialogResult.OK)
+                {
+                    InfoCenterTip.Show("墙洞配置已保存！");
+                }
+            }
+            return Result.Succeeded;
         }
     }
 
     // ================================================================
-    // 【2】HoleCalc：纯计算 / 格式化（本次不修改）
+    // 【1.6】UI 设置窗体
+    // ================================================================
+    public class WallHoleConfigForm : MEPTools.Shared.SpaceSubmitForm
+    {
+        private Document _doc;
+        private Command _cmd;
+
+        private NumericUpDown nudOffset;
+        private NumericUpDown nudTrayExtra;
+        private NumericUpDown nudTolerance;
+        private System.Windows.Forms.ComboBox cmbFamily;
+        private System.Windows.Forms.ComboBox cmbSymbol;
+        private System.Windows.Forms.ComboBox cmbLevel;
+        private System.Windows.Forms.ComboBox cmbCategory;
+        private System.Windows.Forms.TextBox txtParamWidth;
+        private System.Windows.Forms.TextBox txtParamHeight;
+        private System.Windows.Forms.TextBox txtParamDepth;
+
+        public WallHoleConfigForm(Document doc, Command cmd)
+        {
+            _doc = doc;
+            _cmd = cmd;
+            
+            InitializeComponent();
+            LoadRevitData();
+            LoadConfigData();
+        }
+
+        private void InitializeComponent()
+        {
+            this.Text = "墙洞工具 - 参数设置";
+            // ⭐ 修复 1：将窗体高度从 460 调整到 540，防止底部按钮被切掉
+            this.Size = new System.Drawing.Size(430, 540);
+            this.StartPosition = FormStartPosition.CenterScreen;
+            this.FormBorderStyle = FormBorderStyle.FixedDialog;
+            this.MaximizeBox = false;
+            this.MinimizeBox = false;
+
+            int labelX = 25, inputX = 150, y = 20, gap = 36;
+
+            // 用于显示气泡提示
+            ToolTip tip = new ToolTip();
+            tip.AutoPopDelay = 8000;
+            tip.InitialDelay = 200;
+            tip.ReshowDelay = 200;
+
+            // 1. 基础参数
+            AddLabel("四周预留偏移(mm):", labelX, y);
+            nudOffset = new NumericUpDown { Location = new System.Drawing.Point(inputX, y), Width = 230, Maximum = 1000, DecimalPlaces = 1 };
+            tip.SetToolTip(nudOffset, "开出的洞口尺寸比管线大出来的边距。\n例如填 100，洞口四周就会比管线大 100mm。");
+            this.Controls.Add(nudOffset);
+            y += gap;
+
+            AddLabel("桥架附加高(mm):", labelX, y);
+            nudTrayExtra = new NumericUpDown { Location = new System.Drawing.Point(inputX, y), Width = 230, Maximum = 1000, DecimalPlaces = 1 };
+            tip.SetToolTip(nudTrayExtra, "如果在最高处遇到的是桥架（而不是管道或风管），\n顶部额外增加的高度。");
+            this.Controls.Add(nudTrayExtra);
+            y += gap;
+
+            // ⭐ 修复 2：改名“容差”为“空间关联范围”，并增加气泡提示
+            AddLabel("空间关联范围(mm):", labelX, y);
+            nudTolerance = new NumericUpDown { Location = new System.Drawing.Point(inputX, y), Width = 230, Maximum = 5000, DecimalPlaces = 1 };
+            tip.SetToolTip(nudTolerance, "更新多个墙洞时，程序会在洞口周围多大范围内寻找管线。\n如果管线离洞口太远（超过这个范围），则不会被关联更新。\n一般保持 300 即可。");
+            this.Controls.Add(nudTolerance);
+            y += gap + 10;
+
+            // 2. 族与类型联动
+            AddLabel("墙洞族 (Family):", labelX, y);
+            cmbFamily = new System.Windows.Forms.ComboBox { Location = new System.Drawing.Point(inputX, y), Width = 230, DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList };
+            cmbFamily.SelectedIndexChanged += CmbFamily_SelectedIndexChanged;
+            this.Controls.Add(cmbFamily);
+            y += gap;
+
+            AddLabel("族类型 (Type):", labelX, y);
+            cmbSymbol = new System.Windows.Forms.ComboBox { Location = new System.Drawing.Point(inputX, y), Width = 230, DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList };
+            this.Controls.Add(cmbSymbol);
+            y += gap;
+
+            AddLabel("放置标高 (Level):", labelX, y);
+            cmbLevel = new System.Windows.Forms.ComboBox { Location = new System.Drawing.Point(inputX, y), Width = 230, DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList };
+            this.Controls.Add(cmbLevel);
+            y += gap;
+
+            AddLabel("目标类别 (Category):", labelX, y);
+            cmbCategory = new System.Windows.Forms.ComboBox { Location = new System.Drawing.Point(inputX, y), Width = 230, DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList };
+            cmbCategory.Items.AddRange(new object[] { "OST_GenericModel", "OST_Windows", "OST_Doors", "OST_MechanicalEquipment" });
+            this.Controls.Add(cmbCategory);
+            y += gap + 10;
+
+            // 3. 参数名映射
+            AddLabel("宽度参数名:", labelX, y);
+            txtParamWidth = new System.Windows.Forms.TextBox { Location = new System.Drawing.Point(inputX, y), Width = 230 };
+            tip.SetToolTip(txtParamWidth, "填写的参数名必须在选定的族中存在，\n且必须是长度(Length)类型的参数。");
+            this.Controls.Add(txtParamWidth);
+            y += gap;
+
+            AddLabel("高度参数名:", labelX, y);
+            txtParamHeight = new System.Windows.Forms.TextBox { Location = new System.Drawing.Point(inputX, y), Width = 230 };
+            this.Controls.Add(txtParamHeight);
+            y += gap;
+
+            AddLabel("深度参数名:", labelX, y);
+            txtParamDepth = new System.Windows.Forms.TextBox { Location = new System.Drawing.Point(inputX, y), Width = 230 };
+            this.Controls.Add(txtParamDepth);
+            y += gap + 15;
+
+            // 4. 按钮
+            var btnOK = new Button { Text = "保存并应用", Location = new System.Drawing.Point(80, y), Width = 100, Height = 30 };
+            btnOK.Click += BtnOK_Click;
+            this.Controls.Add(btnOK);
+            this.AcceptButton = btnOK;
+
+            var btnCancel = new Button { Text = "取消", Location = new System.Drawing.Point(220, y), Width = 100, Height = 30, DialogResult = DialogResult.Cancel };
+            this.Controls.Add(btnCancel);
+        }
+
+        private void AddLabel(string text, int x, int y)
+        {
+            this.Controls.Add(new Label { Text = text, Location = new System.Drawing.Point(x, y + 3), AutoSize = true });
+        }
+
+        private void LoadRevitData()
+        {
+            // 1. 标高
+            var levels = new FilteredElementCollector(_doc).OfClass(typeof(Level)).Cast<Level>().Select(l => l.Name).OrderBy(n => n).ToList();
+            cmbLevel.DataSource = levels;
+
+            // 2. 族 (过滤系统族)
+            var families = new FilteredElementCollector(_doc).OfClass(typeof(Family))
+                .Cast<Family>()
+                .Where(f => f.IsEditable && f.FamilyCategory != null) 
+                .Select(f => f.Name)
+                .Distinct().OrderBy(n => n).ToList();
+            cmbFamily.DataSource = families;
+        }
+
+        private void CmbFamily_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            string famName = cmbFamily.SelectedItem as string;
+            if (string.IsNullOrEmpty(famName)) return;
+
+            var symbols = new FilteredElementCollector(_doc).OfClass(typeof(FamilySymbol))
+                .Cast<FamilySymbol>()
+                .Where(s => s.Family.Name == famName)
+                .Select(s => s.Name)
+                .OrderBy(n => n)
+                .ToList();
+            
+            cmbSymbol.DataSource = symbols;
+        }
+
+        private void LoadConfigData()
+        {
+            nudOffset.Value = (decimal)_cmd.OFFSET_MM;
+            nudTrayExtra.Value = (decimal)_cmd.CABLE_TRAY_EXTRA_HEIGHT_MM;
+            nudTolerance.Value = (decimal)_cmd.MATCH_TOLERANCE_MM;
+            
+            if (cmbFamily.Items.Contains(_cmd.FAMILY_NAME))
+                cmbFamily.SelectedItem = _cmd.FAMILY_NAME;
+            else
+                cmbFamily.Text = _cmd.FAMILY_NAME;
+
+            if (cmbSymbol.Items.Contains(_cmd.SYMBOL_NAME))
+                cmbSymbol.SelectedItem = _cmd.SYMBOL_NAME;
+            else
+                cmbSymbol.Text = _cmd.SYMBOL_NAME;
+
+            if (cmbLevel.Items.Contains(_cmd.LEVEL_NAME))
+                cmbLevel.SelectedItem = _cmd.LEVEL_NAME;
+            else
+                cmbLevel.Text = _cmd.LEVEL_NAME;
+
+            if (cmbCategory.Items.Contains(_cmd.TARGET_CATEGORY_NAME))
+                cmbCategory.SelectedItem = _cmd.TARGET_CATEGORY_NAME;
+            else
+            {
+                cmbCategory.Items.Add(_cmd.TARGET_CATEGORY_NAME);
+                cmbCategory.SelectedItem = _cmd.TARGET_CATEGORY_NAME;
+            }
+
+            txtParamWidth.Text = _cmd.PARAM_WIDTH_NAME;
+            txtParamHeight.Text = _cmd.PARAM_HEIGHT_NAME;
+            txtParamDepth.Text = _cmd.PARAM_DEPTH_NAME;
+        }
+
+        private void BtnOK_Click(object sender, EventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(cmbFamily.Text) || string.IsNullOrWhiteSpace(cmbSymbol.Text))
+            {
+                InfoCenterTip.Show("族和类型不能为空！");
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(txtParamWidth.Text) || string.IsNullOrWhiteSpace(txtParamHeight.Text))
+            {
+                InfoCenterTip.Show("宽度/高度参数名不能为空！");
+                return;
+            }
+
+            // 写回 Command 内存
+            _cmd.OFFSET_MM = (double)nudOffset.Value;
+            _cmd.CABLE_TRAY_EXTRA_HEIGHT_MM = (double)nudTrayExtra.Value;
+            _cmd.MATCH_TOLERANCE_MM = (double)nudTolerance.Value;
+            _cmd.FAMILY_NAME = cmbFamily.Text;
+            _cmd.SYMBOL_NAME = cmbSymbol.Text;
+            _cmd.LEVEL_NAME = cmbLevel.Text;
+            _cmd.TARGET_CATEGORY_NAME = cmbCategory.Text;
+            
+            if (Enum.TryParse<BuiltInCategory>(_cmd.TARGET_CATEGORY_NAME, true, out var bic))
+                _cmd.TARGET_CATEGORY_ID = (int)bic;
+            
+            _cmd.PARAM_WIDTH_NAME = txtParamWidth.Text;
+            _cmd.PARAM_HEIGHT_NAME = txtParamHeight.Text;
+            _cmd.PARAM_DEPTH_NAME = txtParamDepth.Text;
+
+            // 写入本地文件
+            _cmd.SaveConfigToFile();
+
+            this.DialogResult = DialogResult.OK;
+            this.Close();
+        }
+    }
+
+    // ================================================================
+    // 【2】HoleCalc：纯计算 / 格式化
     // ================================================================
     public static class HoleCalc
     {
@@ -848,7 +1050,6 @@ namespace MEPTools.LinkElementWallHole
 
         private static void Log(string s) => MEPLogger.Instance.AppendLine(s);
 
-        /// <summary>MEP 类型白名单（去重：Command 与 HoleBiz 共用同一判断）。</summary>
         public static bool IsSupportedMep(Element e)
             => e is Duct || e is Pipe || e is CableTray;
 
@@ -884,10 +1085,6 @@ namespace MEPTools.LinkElementWallHole
             return true;
         }
 
-        /// <summary>
-        /// 用 MEP 截面参数计算沿墙方向的洞口宽度贡献。
-        /// 立管等无法用截面参数计算时返回 false（调用方 fallback 到 8 角点投影）。
-        /// </summary>
         public static bool TryGetMepSectionWidth(
             Element e, Transform tf, XYZ wallOrigin, XYZ wallDir,
             out double uCenter, out double widthAlong)
@@ -929,9 +1126,6 @@ namespace MEPTools.LinkElementWallHole
             return widthAlong > 0;
         }
 
-        /// <summary>
-        /// 匹配 MEP → 洞。容差可外部覆盖（默认 300mm，向后兼容）。
-        /// </summary>
         public static List<Element> MatchPipesToHole(
             FamilyInstance hole,
             Dictionary<Element, Outline> pipeOutlines,
@@ -982,9 +1176,6 @@ namespace MEPTools.LinkElementWallHole
             return result;
         }
 
-        /// <summary>
-        /// 写入参数。成功返回 true；参数不存在或只读时 Log warning 并返回 false。
-        /// </summary>
         public static bool SetParam(FamilyInstance inst, string name, double val)
         {
             Parameter p = inst.LookupParameter(name);
