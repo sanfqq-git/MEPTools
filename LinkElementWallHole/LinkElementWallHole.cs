@@ -30,6 +30,14 @@ namespace MEPTools.LinkElementWallHole
         private string LEVEL_NAME;
         private double CABLE_TRAY_EXTRA_HEIGHT_MM;
 
+        // ==== 新增：参数名 / 类别外置（可切换族） ====
+        private string PARAM_WIDTH_NAME;
+        private string PARAM_HEIGHT_NAME;
+        private string PARAM_DEPTH_NAME;
+        private int TARGET_CATEGORY_ID;
+        private string TARGET_CATEGORY_NAME;
+        private double _matchToleranceMm;
+
         private const double MATCH_TOLERANCE_MM = 300.0;
         private const double MM_PER_FOOT = HoleCalc.MM_PER_FOOT;
         private const double EPS = HoleCalc.EPS;
@@ -176,7 +184,7 @@ namespace MEPTools.LinkElementWallHole
                 Element elem = doc.GetElement(id);
                 if (elem is FamilyInstance fi &&
                     fi.Symbol?.Family?.Name == FAMILY_NAME &&
-                    fi.Category?.Id.IntegerValue == (int)BuiltInCategory.OST_GenericModel)
+                    fi.Category?.Id.IntegerValue == TARGET_CATEGORY_ID)
                 {
                     holes.Add(fi);
                 }
@@ -186,7 +194,6 @@ namespace MEPTools.LinkElementWallHole
 
         // ==========================================================
         // 分支 A：创建新洞
-        // 【改动】宽度改用截面参数，高度仍用 8 角点投影；位置和其余不变
         // ==========================================================
         private Result CreateNewHole(Document doc, UIDocument uidoc, Reference wallRef,
             List<Element> pipeElements, Transform pipeTf)
@@ -222,7 +229,7 @@ namespace MEPTools.LinkElementWallHole
             if (Math.Abs(wallDir.Z) > 0.01)
                 Log("[CreateNewHole] 警告：墙不是竖直的（wallDir.Z != 0），投影与插入点计算可能有偏差。");
 
-            // ============ 【改动区开始】宽度用截面参数，高度用 8 角点投影 ============
+            // ============ 宽度用截面参数，高度用 8 角点投影 ============
             double minU = double.MaxValue, maxU = double.MinValue;
             double minZproj = double.MaxValue, maxZproj = double.MinValue;
             bool hasWidth = false;
@@ -237,7 +244,6 @@ namespace MEPTools.LinkElementWallHole
 
                 Log($"[CreateNewHole] MEP {elem.Id} ({elem.GetType().Name}) {FmtOutline(worldOutline)}");
 
-                // --- 宽度：优先用截面参数 ---
                 double uC, wA;
                 if (HoleBiz.TryGetMepSectionWidth(elem, pipeTf, wallOrigin, wallDir, out uC, out wA))
                 {
@@ -248,7 +254,6 @@ namespace MEPTools.LinkElementWallHole
                 }
                 else
                 {
-                    // Fallback: 8 角点投影
                     Log($"[CreateNewHole] MEP {elem.Id} 截面参数不可用，宽度退回 8 角点投影");
                     foreach (var pt in HoleCalc.EnumerateCorners(worldOutline))
                     {
@@ -261,7 +266,6 @@ namespace MEPTools.LinkElementWallHole
                     hasWidth = true;
                 }
 
-                // --- 高度：始终用 8 角点投影（沿墙法向消距后取世界 Z） ---
                 foreach (var pt in HoleCalc.EnumerateCorners(worldOutline))
                 {
                     double dist = (pt - wallOrigin).DotProduct(wallNormal);
@@ -279,7 +283,6 @@ namespace MEPTools.LinkElementWallHole
 
             Log($"[CreateNewHole] 8-角投影(高度部分): minZ={FmtMm(minZproj)} maxZ={FmtMm(maxZproj)}");
             Log($"[CreateNewHole] 宽度汇总: minU={FmtMm(minU)} maxU={FmtMm(maxU)}");
-            // ============ 【改动区结束】 ============
 
             double offsetFeet = OFFSET_MM / MM_PER_FOOT;
             double width = (maxU - minU) + 2 * offsetFeet;
@@ -317,7 +320,7 @@ namespace MEPTools.LinkElementWallHole
                         Reference pickedRef = uidoc.Selection.PickObject(
                             ObjectType.Element,
                             new HoleInstanceSelectionFilter(),
-                            "请选择一个当前项目中的墙洞实例（通用模型类别）");
+                            $"请选择一个当前项目中的墙洞实例（建议类别：{TARGET_CATEGORY_NAME}）");
 
                         FamilyInstance pickedInstance = doc.GetElement(pickedRef) as FamilyInstance;
                         if (pickedInstance != null && pickedInstance.Symbol != null)
@@ -325,6 +328,16 @@ namespace MEPTools.LinkElementWallHole
                             holeSymbol = pickedInstance.Symbol;
                             FAMILY_NAME = holeSymbol.Family.Name;
                             SYMBOL_NAME = holeSymbol.Name;
+
+                            // 类别不一致时警告但继续，并内存更新目标类别（不回写 config）
+                            int pickedCatId = pickedInstance.Category?.Id.IntegerValue ?? -1;
+                            if (pickedCatId != TARGET_CATEGORY_ID)
+                            {
+                                Log($"[CreateNewHole] 警告：所选族类别（ID={pickedCatId}）与配置 " +
+                                    $"{TARGET_CATEGORY_NAME}(ID={TARGET_CATEGORY_ID}) 不同，本次会话内存更新。");
+                                TARGET_CATEGORY_ID = pickedCatId;
+                                TARGET_CATEGORY_NAME = pickedInstance.Category?.Name ?? pickedCatId.ToString();
+                            }
 
                             UpdateConfigFile(FAMILY_NAME, SYMBOL_NAME);
                             Log($"[CreateNewHole] 用户手动指定族：{FAMILY_NAME} - {SYMBOL_NAME}，并已尝试更新 config.txt");
@@ -357,6 +370,14 @@ namespace MEPTools.LinkElementWallHole
                     insertPt, holeSymbol, level,
                     Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
 
+                // 防呆：确保是可自由放置的基于标高/工作平面族
+                if (!(hole.Location is LocationPoint))
+                {
+                    throw new Exception(
+                        $"族 '{FAMILY_NAME}-{SYMBOL_NAME}' 不是基于标高的可自由放置族（LocationPoint 为空）。" +
+                        "当前工具仅支持基于标高/工作平面的常规模型族，请更换族或改用基于面的创建逻辑。");
+                }
+
                 Log($"[CreateNewHole] 实例创建 Id={hole.Id} 初始 HandOrient={FmtDir(hole.HandOrientation)} " +
                     $"FaceOrient={FmtDir(hole.FacingOrientation)}");
 
@@ -366,11 +387,24 @@ namespace MEPTools.LinkElementWallHole
                 FamilyInstance holeAfter = doc.GetElement(holeId) as FamilyInstance;
                 if (holeAfter == null) throw new Exception("创建后重新获取墙洞实例失败。");
 
-                HoleBiz.SetParam(holeAfter, "NDH_Depth", depth);
-                HoleBiz.SetParam(holeAfter, "NDH_Width", width);
-                HoleBiz.SetParam(holeAfter, "NDH_Height", height);
+                // ==== 参数写入：使用配置名 + 检查返回值 ====
+                bool okDepth = HoleBiz.SetParam(holeAfter, PARAM_DEPTH_NAME, depth);
+                bool okWidth = HoleBiz.SetParam(holeAfter, PARAM_WIDTH_NAME, width);
+                bool okHeight = HoleBiz.SetParam(holeAfter, PARAM_HEIGHT_NAME, height);
 
-                Log($"[CreateNewHole] 参数写入 NDH_Depth={FmtMm(depth)} NDH_Width={FmtMm(width)} NDH_Height={FmtMm(height)}");
+                if (!okWidth || !okHeight)
+                {
+                    throw new Exception(
+                        $"墙洞族缺少可写参数 '{PARAM_WIDTH_NAME}' 或 '{PARAM_HEIGHT_NAME}'" +
+                        $"（当前族：{FAMILY_NAME}-{SYMBOL_NAME}）。请检查 config.txt 第 6/7 行。");
+                }
+                if (!okDepth)
+                {
+                    Log($"[CreateNewHole] 警告：深度参数 '{PARAM_DEPTH_NAME}' 写入失败（洞 {holeAfter.Id}），仅记录不中断。");
+                }
+
+                Log($"[CreateNewHole] 参数写入 {PARAM_DEPTH_NAME}={FmtMm(depth)} " +
+                    $"{PARAM_WIDTH_NAME}={FmtMm(width)} {PARAM_HEIGHT_NAME}={FmtMm(height)}");
 
                 tran.Commit();
             }
@@ -401,6 +435,7 @@ namespace MEPTools.LinkElementWallHole
                             newLines.Add(line);
                             continue;
                         }
+                        // 只回写第 1、2 条有效行（族名/符号名），新增字段保持原样
                         if (validLineIndex == 1) newLines.Add(familyName);
                         else if (validLineIndex == 2) newLines.Add(symbolName);
                         else newLines.Add(line);
@@ -417,7 +452,6 @@ namespace MEPTools.LinkElementWallHole
 
         // ==========================================================
         // 分支 B：更新现有洞
-        // 【改动】宽度改用截面参数，高度仍用 8 角点投影；位置和其余不变
         // ==========================================================
         private Result UpdateExistingHoles(Document doc, IList<Reference> holeRefs,
             List<Element> pipeElements, Transform pipeTf)
@@ -440,6 +474,7 @@ namespace MEPTools.LinkElementWallHole
                 tran.Start();
                 int updated = 0;
                 int skippedNoMatch = 0;
+                int paramWriteFailCount = 0;
 
                 foreach (Reference hr in holeRefs)
                 {
@@ -487,7 +522,7 @@ namespace MEPTools.LinkElementWallHole
                     }
                     else
                     {
-                        relatedPipes = HoleBiz.MatchPipesToHole(hole, pipeOutlines);
+                        relatedPipes = HoleBiz.MatchPipesToHole(hole, pipeOutlines, _matchToleranceMm);
                         Log($"[Update] 洞 {hole.Id} 空间匹配到 {relatedPipes.Count} 个 MEP。");
                     }
 
@@ -498,7 +533,6 @@ namespace MEPTools.LinkElementWallHole
                         continue;
                     }
 
-                    // ============ 【改动区开始】宽度用截面参数，高度用 8 角点投影 ============
                     XYZ wallOrigin = new XYZ(lp.Point.X, lp.Point.Y, 0);
                     double minU = double.MaxValue, maxU = double.MinValue;
                     double minZ = double.MaxValue, maxZ = double.MinValue;
@@ -509,7 +543,6 @@ namespace MEPTools.LinkElementWallHole
                     {
                         if (!pipeOutlines.TryGetValue(pipe, out Outline outline)) continue;
 
-                        // --- 宽度：优先用截面参数 ---
                         double uC, wA;
                         if (HoleBiz.TryGetMepSectionWidth(pipe, pipeTf, wallOrigin, wallDir, out uC, out wA))
                         {
@@ -520,7 +553,6 @@ namespace MEPTools.LinkElementWallHole
                         }
                         else
                         {
-                            // Fallback: 8 角点投影
                             Log($"[Update] MEP {pipe.Id} 截面参数不可用，宽度退回 8 角点投影");
                             foreach (var lp3 in HoleCalc.EnumerateCorners(outline))
                             {
@@ -531,7 +563,6 @@ namespace MEPTools.LinkElementWallHole
                             hasWidth = true;
                         }
 
-                        // --- 高度：始终用 8 角点投影（世界 Z） ---
                         foreach (var lp3 in HoleCalc.EnumerateCorners(outline))
                         {
                             if (lp3.Z < minZ) minZ = lp3.Z;
@@ -541,8 +572,7 @@ namespace MEPTools.LinkElementWallHole
                     }
 
                     if (!hasHeight) { skippedNoMatch++; continue; }
-                    if (!hasWidth)   { skippedNoMatch++; continue; }
-                    // ============ 【改动区结束】 ============
+                    if (!hasWidth) { skippedNoMatch++; continue; }
 
                     double offsetFeet = OFFSET_MM / MM_PER_FOOT;
                     double width = (maxU - minU) + 2 * offsetFeet;
@@ -550,7 +580,7 @@ namespace MEPTools.LinkElementWallHole
                     double trayExtra = HoleBiz.GetCableTrayExtraHeightFeet(relatedPipes, pipeTf, CABLE_TRAY_EXTRA_HEIGHT_MM);
                     height += trayExtra;
 
-                    double depth = hole.LookupParameter("NDH_Depth")?.AsDouble() ?? 0.0;
+                    double depth = hole.LookupParameter(PARAM_DEPTH_NAME)?.AsDouble() ?? 0.0;
                     if (depth <= 0.0) depth = 200.0 / MM_PER_FOOT;
 
                     Log($"[Update] 洞 {hole.Id} 投影 minU={FmtMm(minU)} maxU={FmtMm(maxU)} " +
@@ -565,9 +595,22 @@ namespace MEPTools.LinkElementWallHole
                             Log($"[Update] 警告：单洞强绑了跨度较大的 MEP（U跨度={uSpan:F0}mm Z跨度={zSpan:F0}mm），请核对洞口位置与尺寸是否符合预期。");
                     }
 
-                    HoleBiz.SetParam(hole, "NDH_Width", width);
-                    HoleBiz.SetParam(hole, "NDH_Height", height);
-                    HoleBiz.SetParam(hole, "NDH_Depth", depth);
+                    // ==== 参数写入：使用配置名 + 检查返回值 ====
+                    bool okW = HoleBiz.SetParam(hole, PARAM_WIDTH_NAME, width);
+                    bool okH = HoleBiz.SetParam(hole, PARAM_HEIGHT_NAME, height);
+                    bool okD = HoleBiz.SetParam(hole, PARAM_DEPTH_NAME, depth);
+
+                    if (!okW || !okH)
+                    {
+                        Log($"[Update] 洞 {hole.Id} 参数写入失败（宽度={okW}, 高度={okH}），跳过本次更新。");
+                        paramWriteFailCount++;
+                        skippedNoMatch++;
+                        continue;
+                    }
+                    if (!okD)
+                    {
+                        Log($"[Update] 洞 {hole.Id} 警告：深度参数 '{PARAM_DEPTH_NAME}' 写入失败（不中断）。");
+                    }
 
                     XYZ posNow = (hole.Location as LocationPoint)?.Point ?? lp.Point;
                     XYZ targetXY = wallOrigin + ((minU + maxU) / 2) * wallDir;
@@ -585,10 +628,14 @@ namespace MEPTools.LinkElementWallHole
 
                 if (updated == 0)
                 {
+                    string paramDetail = paramWriteFailCount > 0
+                        ? $"\n其中 {paramWriteFailCount} 个洞因族缺少可写参数 " +
+                          $"'{PARAM_WIDTH_NAME}' / '{PARAM_HEIGHT_NAME}' 而失败（请检查 config.txt 第 6/7 行及族参数名）。"
+                        : "";
                     throw new Exception(
                         $"未更新任何墙洞。\n" +
-                        $"可能原因：MEP 与墙洞空间不重叠（相距超过 {MATCH_TOLERANCE_MM}mm），" +
-                        $"或所选元素非族 \"{FAMILY_NAME}\"。\n（跳过 {skippedNoMatch} 个）");
+                        $"可能原因：MEP 与墙洞空间不重叠（相距超过 {_matchToleranceMm:F0}mm），" +
+                        $"或所选元素非族 \"{FAMILY_NAME}\"。\n（跳过 {skippedNoMatch} 个）{paramDetail}");
                 }
                 Log($"[Update] 完成。共更新 {updated} 个，跳过 {skippedNoMatch} 个。");
             }
@@ -598,6 +645,19 @@ namespace MEPTools.LinkElementWallHole
 
         private void LoadConfig()
         {
+            // ==== 先填入默认值（含向后兼容的 5 行与新增 4 行） ====
+            OFFSET_MM = 100.0;
+            FAMILY_NAME = "REWallHole";
+            SYMBOL_NAME = "Rect CBWD for Wall";
+            LEVEL_NAME = "WCS 0.0";
+            CABLE_TRAY_EXTRA_HEIGHT_MM = 0.0;
+            PARAM_WIDTH_NAME = "NDH_Width";
+            PARAM_HEIGHT_NAME = "NDH_Height";
+            PARAM_DEPTH_NAME = "NDH_Depth";
+            TARGET_CATEGORY_ID = (int)BuiltInCategory.OST_GenericModel;
+            TARGET_CATEGORY_NAME = "OST_GenericModel";
+            _matchToleranceMm = MATCH_TOLERANCE_MM;
+
             try
             {
                 string dllPath = System.Reflection.Assembly.GetExecutingAssembly().Location;
@@ -618,9 +678,35 @@ namespace MEPTools.LinkElementWallHole
                         SYMBOL_NAME = validLines[2];
                         LEVEL_NAME = validLines[3];
                         CABLE_TRAY_EXTRA_HEIGHT_MM = double.Parse(validLines[4]);
-                        Log($"[LoadConfig] OFFSET={OFFSET_MM}mm FAMILY='{FAMILY_NAME}' SYMBOL='{SYMBOL_NAME}' " +
-                            $"LEVEL='{LEVEL_NAME}' TRAY_EXTRA={CABLE_TRAY_EXTRA_HEIGHT_MM}mm");
-                        return;
+
+                        if (validLines.Count > 5 && !string.IsNullOrEmpty(validLines[5]))
+                            PARAM_WIDTH_NAME = validLines[5];
+                        if (validLines.Count > 6 && !string.IsNullOrEmpty(validLines[6]))
+                            PARAM_HEIGHT_NAME = validLines[6];
+                        if (validLines.Count > 7 && !string.IsNullOrEmpty(validLines[7]))
+                            PARAM_DEPTH_NAME = validLines[7];
+
+                        if (validLines.Count > 8 && !string.IsNullOrEmpty(validLines[8]))
+                        {
+                            string catStr = validLines[8];
+                            if (Enum.TryParse<BuiltInCategory>(catStr, true, out var bic))
+                            {
+                                TARGET_CATEGORY_ID = (int)bic;
+                                TARGET_CATEGORY_NAME = bic.ToString();
+                            }
+                            else
+                            {
+                                Log($"[LoadConfig] 警告：无法解析 TARGET_CATEGORY='{catStr}'，回退 OST_GenericModel。");
+                            }
+                        }
+
+                        if (validLines.Count > 9)
+                        {
+                            if (double.TryParse(validLines[9], out double tol) && tol > 0)
+                                _matchToleranceMm = tol;
+                            else
+                                Log($"[LoadConfig] 警告：MATCH_TOLERANCE_MM='{validLines[9]}' 无效，沿用 {_matchToleranceMm}mm。");
+                        }
                     }
                 }
             }
@@ -629,10 +715,19 @@ namespace MEPTools.LinkElementWallHole
                 MEPLogger.Instance.LogException("LoadConfig", ex);
             }
 
+            // ==== 后置兜底 ====
+            if (OFFSET_MM <= 0) OFFSET_MM = 100.0;
             if (string.IsNullOrEmpty(FAMILY_NAME)) FAMILY_NAME = "REWallHole";
             if (string.IsNullOrEmpty(SYMBOL_NAME)) SYMBOL_NAME = "Rect CBWD for Wall";
             if (string.IsNullOrEmpty(LEVEL_NAME)) LEVEL_NAME = "WCS 0.0";
-            if (OFFSET_MM <= 0) OFFSET_MM = 100.0;
+            if (string.IsNullOrEmpty(PARAM_WIDTH_NAME)) PARAM_WIDTH_NAME = "NDH_Width";
+            if (string.IsNullOrEmpty(PARAM_HEIGHT_NAME)) PARAM_HEIGHT_NAME = "NDH_Height";
+            if (string.IsNullOrEmpty(PARAM_DEPTH_NAME)) PARAM_DEPTH_NAME = "NDH_Depth";
+
+            Log($"[LoadConfig] OFFSET={OFFSET_MM}mm FAMILY='{FAMILY_NAME}' SYMBOL='{SYMBOL_NAME}' " +
+                $"LEVEL='{LEVEL_NAME}' TRAY_EXTRA={CABLE_TRAY_EXTRA_HEIGHT_MM}mm " +
+                $"PARAM_W='{PARAM_WIDTH_NAME}' PARAM_H='{PARAM_HEIGHT_NAME}' PARAM_D='{PARAM_DEPTH_NAME}' " +
+                $"CATEGORY='{TARGET_CATEGORY_NAME}' MATCH_TOL={_matchToleranceMm}mm");
         }
 
         // ============== 选择过滤器 ==============
@@ -650,7 +745,7 @@ namespace MEPTools.LinkElementWallHole
                 Document linkDoc = linkInst.GetLinkDocument();
                 if (linkDoc == null) return false;
                 Element linkedElem = linkDoc.GetElement(reference.LinkedElementId);
-                return linkedElem is Duct || linkedElem is Pipe || linkedElem is CableTray;
+                return HoleBiz.IsSupportedMep(linkedElem);
             }
         }
 
@@ -673,20 +768,16 @@ namespace MEPTools.LinkElementWallHole
             }
         }
 
+        // ==== 用户手动选族：允许任意 FamilyInstance（类别不一致时 Log warning 并内存更新） ====
         private class HoleInstanceSelectionFilter : ISelectionFilter
         {
-            public bool AllowElement(Element elem)
-            {
-                return elem is FamilyInstance fi &&
-                       fi.Category?.Id.IntegerValue == (int)BuiltInCategory.OST_GenericModel;
-            }
-
+            public bool AllowElement(Element elem) => elem is FamilyInstance;
             public bool AllowReference(Reference reference, XYZ position) => true;
         }
     }
 
     // ================================================================
-    // 【2】HoleCalc：纯计算 / 格式化
+    // 【2】HoleCalc：纯计算 / 格式化（本次不修改）
     // ================================================================
     public static class HoleCalc
     {
@@ -757,6 +848,10 @@ namespace MEPTools.LinkElementWallHole
 
         private static void Log(string s) => MEPLogger.Instance.AppendLine(s);
 
+        /// <summary>MEP 类型白名单（去重：Command 与 HoleBiz 共用同一判断）。</summary>
+        public static bool IsSupportedMep(Element e)
+            => e is Duct || e is Pipe || e is CableTray;
+
         public static bool ParsePipeReferences(Document doc, IList<Reference> refs,
             out RevitLinkInstance pipeLinkInstance, out List<Element> pipeElements, out Transform pipeTf)
         {
@@ -779,7 +874,7 @@ namespace MEPTools.LinkElementWallHole
                     throw new Exception("所有管线必须来自同一个链接");
                 }
                 Element e = pipeLinkDoc?.GetElement(pref.LinkedElementId);
-                if (e != null && (e is Duct || e is Pipe || e is CableTray))
+                if (e != null && IsSupportedMep(e))
                     pipeElements.Add(e);
             }
 
@@ -790,9 +885,8 @@ namespace MEPTools.LinkElementWallHole
         }
 
         /// <summary>
-        /// 【新增】用 MEP 截面参数计算沿墙方向的洞口宽度贡献。
-        /// 返回该 MEP 沿 wallDir 的中心位置 uCenter 和投影宽度 widthAlong。
-        /// 立管等无法用截面参数计算时返回 false（调用方应 fallback 到 8 角点投影）。
+        /// 用 MEP 截面参数计算沿墙方向的洞口宽度贡献。
+        /// 立管等无法用截面参数计算时返回 false（调用方 fallback 到 8 角点投影）。
         /// </summary>
         public static bool TryGetMepSectionWidth(
             Element e, Transform tf, XYZ wallOrigin, XYZ wallDir,
@@ -807,50 +901,46 @@ namespace MEPTools.LinkElementWallHole
 
             Curve curve = lc.Curve;
 
-            // 中心位置投影
             XYZ midLocal = curve.Evaluate(0.5, true);
             XYZ midWorld = tf.OfPoint(midLocal);
             uCenter = (midWorld - wallOrigin).DotProduct(wallDir);
 
-            // 轴线方向（世界坐标）
             XYZ axisLocal = curve.GetEndPoint(1) - curve.GetEndPoint(0);
             XYZ axisWorld = tf.OfVector(axisLocal);
             if (axisWorld.GetLength() < 1e-9) return false;
             axisWorld = axisWorld.Normalize();
 
-            // 管道：圆形截面，任意水平方向投影 = Diameter
             if (e is Pipe pipe)
             {
                 widthAlong = pipe.Diameter;
                 return widthAlong > 0;
             }
 
-            // 风管 / 桥架：矩形截面
             double baseWidth = 0;
             if (e is Duct duct) baseWidth = duct.Width;
             else if (e is CableTray tray) baseWidth = tray.Width;
             if (baseWidth <= 0) return false;
 
-            // 截面水平方向 = 轴线方向 × Z
             XYZ widthDir = axisWorld.CrossProduct(XYZ.BasisZ);
-            if (widthDir.GetLength() < 1e-6)
-            {
-                // 立管：轴线竖直，退回 8 角点投影
-                return false;
-            }
+            if (widthDir.GetLength() < 1e-6) return false;
             widthDir = widthDir.Normalize();
 
-            // 沿 wallDir 投影
             widthAlong = baseWidth * Math.Abs(widthDir.DotProduct(wallDir));
             return widthAlong > 0;
         }
 
-        public static List<Element> MatchPipesToHole(FamilyInstance hole, Dictionary<Element, Outline> pipeOutlines)
+        /// <summary>
+        /// 匹配 MEP → 洞。容差可外部覆盖（默认 300mm，向后兼容）。
+        /// </summary>
+        public static List<Element> MatchPipesToHole(
+            FamilyInstance hole,
+            Dictionary<Element, Outline> pipeOutlines,
+            double matchToleranceMm = MATCH_TOLERANCE_MM)
         {
             BoundingBoxXYZ holeBbox = hole.get_BoundingBox(null);
             if (holeBbox == null) return new List<Element>();
 
-            double tol = MATCH_TOLERANCE_MM / MM_PER_FOOT;
+            double tol = matchToleranceMm / MM_PER_FOOT;
             Outline holeOutline = new Outline(
                 holeBbox.Min - new XYZ(tol, tol, tol),
                 holeBbox.Max + new XYZ(tol, tol, tol));
@@ -892,17 +982,19 @@ namespace MEPTools.LinkElementWallHole
             return result;
         }
 
-        public static void SetParam(FamilyInstance inst, string name, double val)
+        /// <summary>
+        /// 写入参数。成功返回 true；参数不存在或只读时 Log warning 并返回 false。
+        /// </summary>
+        public static bool SetParam(FamilyInstance inst, string name, double val)
         {
             Parameter p = inst.LookupParameter(name);
             if (p != null && !p.IsReadOnly)
             {
                 p.Set(val);
+                return true;
             }
-            else
-            {
-                Log($"[SetParam] 警告：洞 {inst.Id} 参数 '{name}' 不存在或只读，跳过。");
-            }
+            Log($"[SetParam] 警告：洞 {inst.Id} 参数 '{name}' 不存在或只读，写入失败。");
+            return false;
         }
 
         public static void RotateToWall(Document doc, ElementId holeId, XYZ targetDir, XYZ org)

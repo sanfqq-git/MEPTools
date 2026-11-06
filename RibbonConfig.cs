@@ -27,11 +27,13 @@ namespace MEPTools
                 // ================= 1. 连接工具 (下拉菜单) =================
                 new ButtonConfig { Text = "高差三通连接", ToolTip = "有高差的两组MEP 元素，生成高差三通", CommandType = typeof(MEPTools.MEP3TeeConnect.Command), PulldownGroup = "连接工具" },
                 new ButtonConfig { Text = "高差相交双三通连接", ToolTip = "高差相交的两组MEP 元素，生成双三通", CommandType = typeof(MEPTools.MEP3TeeCrossConnect.Command), PulldownGroup = "连接工具" },
-                new ButtonConfig { Text = "高低连接", ToolTip = "有高差的两组MEP 元素，设角度生成连接", CommandType = typeof(MEPTools.MEPHighLowConnector.Command), PulldownGroup = "连接工具" },
                 
-                // 【修改点】拆分为共线与转角两个命令
-                new ButtonConfig { Text = "平面共线连接", ToolTip = "同轴的两组MEP元素，直接延长并合并", CommandType = typeof(MEPTools.MEPPlanarConnector.Commands.CollinearCommand), PulldownGroup = "连接工具" },
-                new ButtonConfig { Text = "平面转角连接", ToolTip = "不平行但有交点的两组MEP元素，延长并生成弯头", CommandType = typeof(MEPTools.MEPPlanarConnector.Commands.CornerCommand), PulldownGroup = "连接工具" },
+                // 【修复】更新高低连接命令的新命名空间
+                new ButtonConfig { Text = "高低连接", ToolTip = "有高差的两组MEP 元素，设角度生成连接", CommandType = typeof(MEPTools.MEPConnector.HighLow.Command), PulldownGroup = "连接工具" },
+                
+                // 【修复】更新平面共线、转角连接命令的新命名空间
+                new ButtonConfig { Text = "平面共线连接", ToolTip = "同轴的两组MEP元素，直接延长并合并", CommandType = typeof(MEPTools.MEPConnector.Planar.Commands.CollinearCommand), PulldownGroup = "连接工具" },
+                new ButtonConfig { Text = "平面转角连接", ToolTip = "不平行但有交点的两组MEP元素，延长并生成弯头", CommandType = typeof(MEPTools.MEPConnector.Planar.Commands.CornerCommand), PulldownGroup = "连接工具" },
 
                 // ================= 2. 翻弯工具 (下拉菜单) =================
                 new ButtonConfig { Text = "高低翻弯", ToolTip = "高低差生成马鞍翻弯", CommandType = typeof(MEPTools.MEPHighLowSaddleBend.Command), PulldownGroup = "翻弯工具" },

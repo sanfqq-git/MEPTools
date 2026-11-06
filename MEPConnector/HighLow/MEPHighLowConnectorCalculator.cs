@@ -5,7 +5,7 @@ using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
 
-namespace MEPTools.MEPHighLowConnector
+namespace MEPTools.MEPConnector.HighLow
 {
     public enum MEPElementType { Pipe, Duct, CableTray, Unknown }
 
@@ -75,6 +75,30 @@ namespace MEPTools.MEPHighLowConnector
                 return false;
             }
             return true;
+        }
+
+        /// <summary>
+        /// 计算两管水平方向的实际偏移距离。若不平行返回 double.MaxValue。
+        /// </summary>
+        public static double GetHorizontalDeviation(Element a, Element b)
+        {
+            Line la = GetAxisLine(a);
+            Line lb = GetAxisLine(b);
+            if (la == null || lb == null) return double.MaxValue;
+
+            XYZ da = new XYZ(la.Direction.X, la.Direction.Y, 0);
+            XYZ db = new XYZ(lb.Direction.X, lb.Direction.Y, 0);
+            if (da.GetLength() < 1e-9 || db.GetLength() < 1e-9) return double.MaxValue;
+            da = da.Normalize();
+            db = db.Normalize();
+
+            double cross = da.X * db.Y - da.Y * db.X;
+            if (Math.Abs(cross) > 1e-2) return double.MaxValue; // 不平行
+
+            XYZ sa = la.GetEndPoint(0);
+            XYZ sb = lb.GetEndPoint(0);
+            XYZ ab = new XYZ(sb.X - sa.X, sb.Y - sa.Y, 0);
+            return Math.Abs(ab.X * da.Y - ab.Y * da.X);
         }
 
         public static bool HasCompatibleSystemType(Element a, Element b, out string reason)
@@ -207,13 +231,10 @@ namespace MEPTools.MEPHighLowConnector
             double absDz = Math.Abs(dZ);
             if (absDz < 1e-6) { g.ErrorMessage = "A/B 组管高度相同，无法生成斜段或垂直段"; return g; }
 
-            // ========================================================
-            // 【核心修复】：完美支持 90 度
-            // ========================================================
             double dX;
             if (thetaDeg >= 89.9) 
             {
-                dX = 0; // 90度时，水平偏移直接归零，生成垂直管
+                dX = 0; 
             }
             else
             {

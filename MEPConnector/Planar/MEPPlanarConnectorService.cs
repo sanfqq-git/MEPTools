@@ -1,9 +1,11 @@
 using System;
+using System.Collections.Generic;
 using Autodesk.Revit.DB;
 using MEPTools.Shared;
+using MEPTools.MEPConnector.Shared;
 using Connector = Autodesk.Revit.DB.Connector;
 
-namespace MEPTools.MEPPlanarConnector.Core
+namespace MEPTools.MEPConnector.Planar.Core
 {
     public class PlanarConnectorService
     {
@@ -12,11 +14,13 @@ namespace MEPTools.MEPPlanarConnector.Core
         public PlanarConnectorService() : this(MEPLogger.Instance) { }
         public PlanarConnectorService(MEPLogger log) { _log = log ?? MEPLogger.Instance; }
 
-        #region ==================== 共线连接 ====================
+        public bool AlignPair(Document doc, Element a, Element b)
+        {
+            return MEPConnectorUtils.AlignPair(doc, a, b);
+        }
 
         public bool ProcessCollinear(Document doc, Element a, Element b)
         {
-            // 【关键修复】：前置判断，若传入元素已经被删除（null），直接拦截
             if (a == null || b == null || !a.IsValidObject || !b.IsValidObject) 
             {
                 _log.AppendLine("✗ [共线] 传入元素无效或已被删除");
@@ -26,19 +30,22 @@ namespace MEPTools.MEPPlanarConnector.Core
             var g = PlanarConnectorCalculator.ComputeCollinear(a, b);
             if (!g.IsValid) { _log.AppendLine("✗ [共线] 计算失败: " + g.ErrorMessage); return false; }
 
-            // 【核心修复】：在删除 b 之前，先保存好两者的 ID，后续日志只用 ID 变量，绝不访问 b.Id
             ElementId idA = a.Id;
             ElementId idB = b.Id;
 
-            // 1. 核心逻辑：无条件尝试把 A 拉长覆盖 B，并删除 B（保留 A 组 ID）
+            // 前置：强行把 A 管的端点拉到与 B 管完全贴合（消除微小的计算误差）
+            if (g.PA.DistanceTo(g.PB) > 1e-4)
+            {
+                MoveEndpointTo(doc, a, g.PA, g.PB);
+                doc.Regenerate();
+            }
+
             if (TryHardMerge(doc, a, b, g))
             {
                 _log.AppendLine($"✓ [共线] 成功合并为一条管线: {idA} 吞噬 {idB}");
                 return true;
             }
 
-            // 2. 如果吞噬失败（例如 B 的远端连着其他配件，Revit 拒绝删除报 Error 1）
-            // 退回“端点对齐 + 逻辑连接”，绝不生成任何配件。
             _log.AppendLine($"⚠ [共线] 强行吞噬失败 {idA} -> {idB}，退回端点对齐+逻辑连接模式。");
             return ProcessCollinearFallback(doc, a, b, g);
         }
@@ -51,32 +58,54 @@ namespace MEPTools.MEPPlanarConnector.Core
                 var lineA = lcA?.Curve as Line;
                 if (lineA == null) return false;
 
+                // 【核心修复 1】：在删除 B 管前，记录下挂在 B 远端的所有连接头（比如截图里那个 45 度弯头）
+                Connector bOuterConn = GetExactConnector(b, g.OuterPB);
+                List<Connector> outerRefs = new List<Connector>();
+                if (bOuterConn != null && bOuterConn.IsConnected)
+                {
+                    foreach (Connector c in bOuterConn.AllRefs)
+                    {
+                        if (c.Owner.Id != b.Id) outerRefs.Add(c);
+                    }
+                }
+
                 XYZ a0 = lineA.GetEndPoint(0);
                 XYZ a1 = lineA.GetEndPoint(1);
-
-                // 找到 A 不需要移动的那一端（也就是原 A 的外侧端）
                 XYZ preservedA = (g.PA.DistanceTo(a0) < 1e-3) ? a1 : a0;
 
                 Line newLine;
-                // 严格判断方向，生成与原拓扑一致的曲线，避免 Error 2 (反向报错)
                 if (a0.DistanceTo(preservedA) < 1e-3)
                 {
-                    // A 的起点是固定端，那么把终点拉伸到 B 的远端
                     newLine = Line.CreateBound(a0, g.OuterPB);
                 }
                 else
                 {
-                    // A 的终点是固定端，那么把起点拉伸到 B 的远端
                     newLine = Line.CreateBound(g.OuterPB, a1);
                 }
 
-                // 暴力拉长 A
+                // 1. A 管伸长取代 B 管
                 lcA.Curve = newLine;
                 doc.Regenerate();
 
-                // 暴力删除 B
+                // 2. 删除 B 管（此时斜角弯头会掉落断开）
                 doc.Delete(b.Id);
                 doc.Regenerate();
+
+                // 【核心修复 2】：让 A 管的远端去“接盘” B 管留下的接头
+                if (outerRefs.Count > 0)
+                {
+                    Connector aOuterConn = GetExactConnector(a, g.OuterPB);
+                    if (aOuterConn != null)
+                    {
+                        foreach (var target in outerRefs)
+                        {
+                            if (target.IsValidObject && !target.IsConnected)
+                            {
+                                try { aOuterConn.ConnectTo(target); } catch { }
+                            }
+                        }
+                    }
+                }
                 
                 return true;
             }
@@ -89,18 +118,6 @@ namespace MEPTools.MEPPlanarConnector.Core
 
         private bool ProcessCollinearFallback(Document doc, Element a, Element b, PlanarConnectGeometry g)
         {
-            // 1. 移动 A 端点使其与 B 完全重合
-            if (g.PA.DistanceTo(g.PB) > 1e-4)
-            {
-                if (!MoveEndpointTo(doc, a, g.PA, g.PB))
-                {
-                    _log.AppendLine($"✗ [共线-退避] 端点对齐失败");
-                    return false;
-                }
-            }
-            doc.Regenerate();
-
-            // 2. 获取端点连接件
             Connector ca = GetExactConnector(a, g.PB);
             Connector cb = GetExactConnector(b, g.PB);
 
@@ -111,7 +128,6 @@ namespace MEPTools.MEPPlanarConnector.Core
             }
             if (ca.IsConnectedTo(cb)) return true;
 
-            // 3. 直接调用 ConnectTo 进行底层逻辑连接 (绝不生成可视配件)
             try
             {
                 ca.ConnectTo(cb);
@@ -124,10 +140,6 @@ namespace MEPTools.MEPPlanarConnector.Core
                 return false;
             }
         }
-
-        #endregion
-
-        #region ==================== 转角连接 ====================
 
         public bool ProcessCorner(Document doc, Element a, Element b)
         {
@@ -164,10 +176,6 @@ namespace MEPTools.MEPPlanarConnector.Core
             }
         }
 
-        #endregion
-
-        #region ==================== 公共辅助 ====================
-
         private bool MoveEndpointTo(Document doc, Element e, XYZ oldEndPt, XYZ newEndPt)
         {
             var mc = e as MEPCurve;
@@ -199,7 +207,8 @@ namespace MEPTools.MEPPlanarConnector.Core
 
             foreach (Connector c in cm.Connectors)
             {
-                if (c.Origin.DistanceTo(pt) < 1e-5) return c;
+                // 将容差从 1e-5 放宽到 1e-4，防止坐标计算舍入误差导致找不到接头
+                if (c.Origin.DistanceTo(pt) < 1e-4) return c; 
             }
             return null;
         }
@@ -210,7 +219,5 @@ namespace MEPTools.MEPPlanarConnector.Core
             if (elem is FamilyInstance fi && fi.MEPModel != null) return fi.MEPModel.ConnectorManager;
             return null;
         }
-
-        #endregion
     }
 }

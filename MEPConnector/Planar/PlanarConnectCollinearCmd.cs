@@ -7,12 +7,12 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
 using MEPTools.Shared;
-using MEPTools.MEPPlanarConnector.Core;
+using MEPTools.MEPConnector.Planar.Core; // 【修改】更新命名空间引用
 
-namespace MEPTools.MEPPlanarConnector.Commands
+namespace MEPTools.MEPConnector.Planar.Commands // 【修改】更新命名空间
 {
     [Transaction(TransactionMode.Manual)]
-    public class CornerCommand : IExternalCommand
+    public class CollinearCommand : IExternalCommand
     {
         public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
         {
@@ -44,7 +44,7 @@ namespace MEPTools.MEPPlanarConnector.Commands
                         aList = preselectedCurves;
                         uidoc.Selection.SetElementIds(new List<ElementId>());
                         MEPLogger.Instance.AppendLine(
-                            $"[Corner] 使用预选 A 组 {aList.Count} 个元素。");
+                            $"[Collinear] 使用预选 A 组 {aList.Count} 个元素。");
                         InfoCenterTip.Show(
                             $"已识别预选 A 组 {aList.Count} 个，请选择 B 组（空格键确认）");
                     }
@@ -84,7 +84,7 @@ namespace MEPTools.MEPPlanarConnector.Commands
                 return Result.Cancelled;
             }
 
-            var pairs = PlanarConnectorCalculator.MatchPairs(aList, bList, true);
+            var pairs = PlanarConnectorCalculator.MatchPairs(aList, bList, false);
 
             if (pairs.Count == 0)
             {
@@ -92,18 +92,88 @@ namespace MEPTools.MEPPlanarConnector.Commands
                 return Result.Cancelled;
             }
 
+            // ---------- 【新增】前置水平对齐检测 ----------
+            int nonCollinearCount = 0;
+            double minDeviationMm = 1.0; // 容差 1mm
+            var pairsWithDeviation = new List<ConnectorPair>();
+
+            foreach (var pair in pairs)
+            {
+                Element elA = doc.GetElement(pair.AId);
+                Element elB = doc.GetElement(pair.BId);
+                if (elA == null || elB == null) continue;
+
+                // 计算两管的水平错位距离
+                double dev = PlanarConnectorCalculator.GetHorizontalDeviation(elA, elB);
+                
+                // 若不是完全不平行状态，且偏差大于 1mm，则加入待对齐列表
+                if (dev != double.MaxValue && dev * PlanarConnectorCalculator.FtToMm > minDeviationMm)
+                {
+                    nonCollinearCount++;
+                    pairsWithDeviation.Add(pair);
+                }
+            }
+
+            bool doAlign = false;
+            if (nonCollinearCount > 0)
+            {
+                var dialog = new TaskDialog("检测到共线偏差");
+                dialog.MainInstruction = $"检测到 {nonCollinearCount} 对元素存在水平偏差（> {minDeviationMm}mm）";
+                dialog.MainContent = "强行合并会导致管线扭曲。\n\n是否自动在水平面上平移 B 组元素，使其与 A 组完全共线？\n\n选择“是”将为您执行前置准备，消除偏差后再合并。\n选择“否”将取消本次操作。";
+                dialog.CommonButtons = TaskDialogCommonButtons.Yes | TaskDialogCommonButtons.No;
+                dialog.DefaultButton = TaskDialogResult.Yes;
+
+                if (dialog.Show() == TaskDialogResult.Yes)
+                {
+                    doAlign = true;
+                }
+                else
+                {
+                    InfoCenterTip.Show("已取消：元素存在水平偏差且未纠偏");
+                    return Result.Cancelled;
+                }
+            }
+
             // ---------- 5. 执行 ----------
-            MEPLogger.Instance.StartSession("MEP 转角连接");
+            MEPLogger.Instance.StartSession("MEP 共线延长");
             var service = new PlanarConnectorService();
             int success = 0, fail = 0;
 
-            using (Transaction trans = new Transaction(doc, "MEP 转角连接"))
+            using (Transaction trans = new Transaction(doc, "MEP 共线延长"))
             {
                 trans.Start();
+
+                // 【新增】执行前置对齐逻辑
+                if (doAlign)
+                {
+                    int alignCount = 0;
+                    foreach (var pair in pairsWithDeviation)
+                    {
+                        Element elA = doc.GetElement(pair.AId);
+                        Element elB = doc.GetElement(pair.BId);
+                        if (elA == null || elB == null) continue;
+
+                        if (service.AlignPair(doc, elA, elB)) alignCount++;
+                    }
+                    
+                    // 必须刷新文档，让对齐操作生效并更新几何信息
+                    doc.Regenerate(); 
+                    MEPLogger.Instance.AppendLine($"已自动水平对齐 {alignCount} 对元素。\n");
+                }
+
+                // 执行合并
                 foreach (var pair in pairs)
                 {
                     Element elA = doc.GetElement(pair.AId);
                     Element elB = doc.GetElement(pair.BId);
+
+                    // 如果在之前的配对中，B 已经被吞噬删除了，这里会拿到 null，直接跳过
+                    if (elA == null || elB == null)
+                    {
+                        MEPLogger.Instance.AppendLine($"✗ 跳过 {pair.AId} & {pair.BId}: 元素已在之前的合并中被删除");
+                        fail++;
+                        continue;
+                    }
 
                     if (!PlanarConnectorCalculator.IsSameType(elA, elB))
                     {
@@ -112,13 +182,7 @@ namespace MEPTools.MEPPlanarConnector.Commands
                         continue;
                     }
 
-                    if (!IsSystemTypeCompatible(elA, elB))
-                    {
-                        MEPLogger.Instance.AppendLine(
-                            $"⚠ 警告: {elA.Id} & {elB.Id} 系统类型不一致，仍尝试连接");
-                    }
-
-                    if (service.ProcessCorner(doc, elA, elB)) success++;
+                    if (service.ProcessCollinear(doc, elA, elB)) success++;
                     else fail++;
                 }
                 trans.Commit();
@@ -128,30 +192,11 @@ namespace MEPTools.MEPPlanarConnector.Commands
 
             // ---------- 6. 结果用 InfoCenter 显示 ----------
             string hint = (success == 0 && fail > 0)
-                ? "（若两管平行错开，请用【共线连接】命令）"
+                ? "（若两管垂直交叉，请用【转角连接】命令）"
                 : "";
-            InfoCenterTip.Show($"转角连接完成：成功 {success} 对，失败 {fail} 对{hint}");
+            InfoCenterTip.Show($"共线连接完成：成功 {success} 对，失败 {fail} 对{hint}");
 
             return Result.Succeeded;
         }
-
-        private bool IsSystemTypeCompatible(Element a, Element b)
-        {
-            var ta = PlanarConnectorCalculator.GetElementType(a);
-            var tb = PlanarConnectorCalculator.GetElementType(b);
-
-            if (ta == MEPElementType.CableTray) return true;
-
-            var sysA = PlanarConnectorCalculator.GetSystemTypeId(a, ta);
-            var sysB = PlanarConnectorCalculator.GetSystemTypeId(b, tb);
-            return sysA == sysB;
-        }
-    }
-
-    // 全局管道选择过滤器
-    public class MEPCurveSelectionFilter : ISelectionFilter
-    {
-        public bool AllowElement(Element elem) { return elem is MEPCurve; }
-        public bool AllowReference(Reference reference, XYZ position) { return false; }
     }
 }

@@ -12,7 +12,7 @@ using WinForms = System.Windows.Forms;
 
 using Connector = Autodesk.Revit.DB.Connector;
 
-namespace MEPTools.MEPHighLowConnector
+namespace MEPTools.MEPConnector.HighLow
 {
     [Transaction(TransactionMode.Manual)]
     [Regeneration(RegenerationOption.Manual)]
@@ -31,20 +31,14 @@ namespace MEPTools.MEPHighLowConnector
 
             try
             {
-                // ==========================================
-                // 【修改点 1】：提示文案支持 90 度
-                // ==========================================
                 double angleDeg = DefaultAngleDeg;
 
                 if ((WinForms.Control.ModifierKeys & WinForms.Keys.Shift) == WinForms.Keys.Shift)
                 {
                     string input = ShowInputBox("按住 Shift 唤起了自定义角度。\n请输入连接角度（1 ~ 90 度）：\n\n注：输入 90 度将直接垂直连接（无斜段）。", "MEP 斜段连接角度", DefaultAngleDeg.ToString());
 
-                    if (input == null) return Result.Cancelled; // 用户点了取消
+                    if (input == null) return Result.Cancelled; 
 
-                    // ==========================================
-                    // 【修改点 2】：允许等于 90 度
-                    // ==========================================
                     if (!double.TryParse(input, out angleDeg) || angleDeg < 1.0 || angleDeg > 90.0)
                     {
                         message = "输入的角度无效，请输入 1 到 90 之间的数字。";
@@ -110,30 +104,58 @@ namespace MEPTools.MEPHighLowConnector
                 }
 
                 int idx = 0;
+                int nonCollinearCount = 0;
+                double minDeviationMm = 1.0; // 1mm 偏差容忍度
+
                 foreach (var p in pairs)
                 {
                     idx++;
                     var a = doc.GetElement(p.AId);
                     var b = doc.GetElement(p.BId);
-                    log.AppendLine(string.Format(
-                        "\n--- 配对 {0}: A={1} ↔ B={2}（匹配距离 {3:F1}mm）---",
-                        idx, p.AId.IntegerValue, p.BId.IntegerValue, p.Distance * 304.8));
-
+                    
                     string reason;
-                    if (!MEPConnectorCalculator.IsHorizontallyCollinear(a, b, out reason))
-                    {
-                        message = string.Format("配对 {0} 共线校验失败：{1}", idx, reason);
-                        InfoCenterTip.Show("共线校验失败：" + reason);
-                        return Result.Failed;
-                    }
                     if (!MEPConnectorCalculator.HasCompatibleSystemType(a, b, out reason))
                     {
                         message = string.Format("配对 {0} 系统类型校验失败：{1}", idx, reason);
                         InfoCenterTip.Show("系统类型校验失败：" + reason);
                         return Result.Failed;
                     }
+
+                    double dev = MEPConnectorCalculator.GetHorizontalDeviation(a, b);
+                    
+                    log.AppendLine(string.Format(
+                        "\n--- 配对 {0}: A={1} ↔ B={2}（匹配距离 {3:F1}mm, 水平偏差 {4:F2}mm）---",
+                        idx, p.AId.IntegerValue, p.BId.IntegerValue, p.Distance * 304.8, dev * 304.8));
+
+                    if (dev * 304.8 > minDeviationMm)
+                    {
+                        nonCollinearCount++;
+                        log.AppendLine($"配对 {idx} 存在水平偏差，需纠偏。");
+                    }
                 }
-                log.AppendLine("\n所有配对通过共线/系统类型校验");
+
+                // 判断是否需要执行前置纠偏
+                bool doAlign = false;
+                if (nonCollinearCount > 0)
+                {
+                    var dialog = new TaskDialog("检测到共线偏差");
+                    dialog.MainInstruction = $"检测到 {nonCollinearCount} 对元素不完全共线（存在水平偏差）";
+                    dialog.MainContent = "是否自动在水平面上平移 B 组元素，使其与 A 组完全共线？\n\n选择“是”将为您执行前置准备，消除偏差，确保连接平滑。\n选择“否”将取消本次操作。";
+                    dialog.CommonButtons = TaskDialogCommonButtons.Yes | TaskDialogCommonButtons.No;
+                    dialog.DefaultButton = TaskDialogResult.Yes;
+                    
+                    if (dialog.Show() == TaskDialogResult.Yes)
+                    {
+                        doAlign = true;
+                        log.AppendLine($"\n用户确认：执行前置纠偏。");
+                    }
+                    else
+                    {
+                        message = "存在未对齐的元素，用户取消了纠偏。";
+                        InfoCenterTip.Show("已取消：元素存在偏差且未纠偏");
+                        return Result.Failed;
+                    }
+                }
 
                 InfoCenterTip.Show($"开始处理 {pairs.Count} 对连接（角度 {angleDeg:F0}°）");
                 
@@ -142,6 +164,22 @@ namespace MEPTools.MEPHighLowConnector
                 {
                     tx.Start();
                     var svc = new MEPConnectorService(log);
+
+                    // 执行前置对齐
+                    if (doAlign)
+                    {
+                        int alignCount = 0;
+                        foreach (var p in pairs)
+                        {
+                            var a = doc.GetElement(p.AId);
+                            var b = doc.GetElement(p.BId);
+                            if (svc.AlignPair(doc, a, b)) alignCount++;
+                        }
+                        doc.Regenerate(); // 必须刷新文档，更新元素几何信息
+                        log.AppendLine($"已自动对齐 {alignCount} 对元素。\n");
+                    }
+
+                    // 执行连接
                     foreach (var p in pairs)
                     {
                         try
@@ -197,7 +235,7 @@ namespace MEPTools.MEPHighLowConnector
             {
                 form.Text = title;
                 form.Width = 400;
-                form.Height = 220; // 稍微加高一点，容纳说明文字
+                form.Height = 220;
                 form.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog;
                 form.StartPosition = WinForms.FormStartPosition.CenterScreen;
                 form.MaximizeBox = false;

@@ -6,10 +6,11 @@ using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
 using MEPTools.Shared;
+using MEPTools.MEPConnector.Shared;
 
 using Connector = Autodesk.Revit.DB.Connector;
 
-namespace MEPTools.MEPHighLowConnector
+namespace MEPTools.MEPConnector.HighLow
 {
     public class MEPConnectorService
     {
@@ -83,6 +84,15 @@ namespace MEPTools.MEPHighLowConnector
             return s;
         }
 
+        /// <summary>
+        /// 强制将 B 组管在水平面上平移到 A 组管轴线上（保持 Z 坐标不变）
+        /// </summary>
+        public bool AlignPair(Document doc, Element a, Element b)
+{
+    // 直接调用公共工具类，不用重复写几十行代码了
+    return MEPConnectorUtils.AlignPair(doc, a, b);
+}
+
         public bool ProcessPair(Document doc, ElementId aId, ElementId bId, double thetaDeg)
         {
             Element a = doc.GetElement(aId);
@@ -138,25 +148,18 @@ namespace MEPTools.MEPHighLowConnector
             Element ramp = CreateMEPCurve(doc, snap, g.PA, g.PB);
             if (ramp == null) { _log.AppendLine("✗ 过渡管创建失败"); return false; }
             
-            // =========================================================
-            // 【核心修复】：90 度防扭曲处理（使用旋转，而不是修改参数）
-            // =========================================================
+            // 90 度防扭曲处理
             if (horizontalDist < tolDist && (ramp is Duct || ramp is CableTray))
             {
                 Connector ca = GetConnectorAtPoint(a, g.PA);
                 if (ca != null)
                 {
                     XYZ basisX = ca.CoordinateSystem.BasisX;
-                    
-                    // 如果 A 管端面的局部 X 轴（宽度方向）更倾向于全局 Y 轴
-                    // 这意味着垂直管的默认宽（全局 X 轴）与它垂直，必须旋转 90 度
                     if (Math.Abs(basisX.Y) > Math.Abs(basisX.X))
                     {
                         _log.AppendLine("  [INFO] 检测到 90 度垂直过渡管宽高方向反置，执行旋转以避免穿模。");
-                        
                         try
                         {
-                            // 绕着垂直管的轴线（Z轴）原地旋转 90 度
                             Line axis = Line.CreateUnbound(g.PA, XYZ.BasisZ);
                             ElementTransformUtils.RotateElement(doc, ramp.Id, axis, Math.PI / 2);
                             _log.AppendLine("  ✓ 垂直过渡管已原地旋转 90 度以对齐截面");
@@ -174,7 +177,7 @@ namespace MEPTools.MEPHighLowConnector
 
             // ---- 2 个弯头 ----
             bool ok1 = TryCreateElbow(doc, aId, ramp.Id, g.PA, "弯头1(A-过渡管)");
-            if (ok1) doc.Regenerate(); // 连完第一个后刷新，避免 Revit 方向判断异常
+            if (ok1) doc.Regenerate(); 
             TryCreateElbow(doc, ramp.Id, bId, g.PB, "弯头2(过渡管-B)");
 
             return true;

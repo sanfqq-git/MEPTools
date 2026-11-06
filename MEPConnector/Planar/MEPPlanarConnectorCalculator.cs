@@ -6,7 +6,7 @@ using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
 
-namespace MEPTools.MEPPlanarConnector.Core
+namespace MEPTools.MEPConnector.Planar.Core
 {
     public enum MEPElementType { Pipe, Duct, CableTray, Unknown }
 
@@ -62,6 +62,28 @@ namespace MEPTools.MEPPlanarConnector.Core
             return GetElementType(a) == GetElementType(b);
         }
 
+        public static double GetHorizontalDeviation(Element a, Element b)
+        {
+            Line la = GetAxisLine(a);
+            Line lb = GetAxisLine(b);
+            if (la == null || lb == null) return double.MaxValue;
+
+            XYZ da = new XYZ(la.Direction.X, la.Direction.Y, 0);
+            XYZ db = new XYZ(lb.Direction.X, lb.Direction.Y, 0);
+            if (da.GetLength() < 1e-9 || db.GetLength() < 1e-9) return double.MaxValue;
+            da = da.Normalize();
+            db = db.Normalize();
+
+            // 【修复】放宽平行度判断
+            double cross = da.X * db.Y - da.Y * db.X;
+            if (Math.Abs(cross) > 1e-2) return double.MaxValue;
+
+            XYZ sa = la.GetEndPoint(0);
+            XYZ sb = lb.GetEndPoint(0);
+            XYZ ab = new XYZ(sb.X - sa.X, sb.Y - sa.Y, 0);
+            return Math.Abs(ab.X * da.Y - ab.Y * da.X);
+        }
+
         public static PlanarConnectGeometry ComputeCollinear(Element a, Element b)
         {
             var g = new PlanarConnectGeometry { IsValid = false, IsCollinear = true };
@@ -84,8 +106,9 @@ namespace MEPTools.MEPPlanarConnector.Core
             if (da.GetLength() < 1e-9 || db.GetLength() < 1e-9) { g.ErrorMessage = "存在竖直段，无法平面连接"; return g; }
             da = da.Normalize(); db = db.Normalize();
 
+            // 【修复】放宽平行度判断
             double cross = da.X * db.Y - da.Y * db.X;
-            if (Math.Abs(cross) > 1e-6) { g.ErrorMessage = "两管不平行，无法共线延长"; return g; }
+            if (Math.Abs(cross) > 1e-3) { g.ErrorMessage = "两管不平行，无法共线延长"; return g; }
 
             XYZ aMid = (a0 + a1) * 0.5;
             XYZ bMid = (b0 + b1) * 0.5;
@@ -148,15 +171,17 @@ namespace MEPTools.MEPPlanarConnector.Core
             {
                 Line refLine = GetAxisLine(aList[0]);
                 if (refLine == null) return pairs;
-                XYZ dir = (refLine.GetEndPoint(1) - refLine.GetEndPoint(0)).Normalize();
-                bool isHorizontal = Math.Abs(dir.X) > Math.Abs(dir.Y);
+
+                // 【核心修复】绝对统一排序基准！取第一根管的法向量投影
+                XYZ dir = new XYZ(refLine.Direction.X, refLine.Direction.Y, 0).Normalize();
+                XYZ normal = new XYZ(-dir.Y, dir.X, 0);
 
                 Func<Element, double> getSortValue = (el) =>
                 {
                     var line = GetAxisLine(el);
                     if (line == null) return 0;
                     var mid = (line.GetEndPoint(0) + line.GetEndPoint(1)) * 0.5;
-                    return isHorizontal ? mid.Y : mid.X;
+                    return mid.DotProduct(normal);
                 };
 
                 var sortedA = aList.OrderBy(getSortValue).ToList();
