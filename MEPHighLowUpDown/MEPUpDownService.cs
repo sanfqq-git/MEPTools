@@ -7,6 +7,7 @@ using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
 using MEPTools.Shared;
+using MEPTools.MEPConnector.HighLow; // 引入 HighLow 的命名空间
 
 namespace MEPTools.MEPHighLowUpDown
 {
@@ -239,10 +240,12 @@ namespace MEPTools.MEPHighLowUpDown
                 ElementId tmp = keepSegId; keepSegId = delSegId; delSegId = tmp;
             }
 
-            _log.AppendLine($"打断完成 → 保留段 ID={keepSegId.IntegerValue}, 待重建段 ID={delSegId.IntegerValue}");
+            _log.AppendLine($"打断完成 → 保留段 ID={keepSegId.IntegerValue}, 待移动段 ID={delSegId.IntegerValue}");
 
-            doc.Delete(delSegId);
-            doc.Regenerate();
+            Element keepSeg = doc.GetElement(keepSegId);
+            Element delSeg = doc.GetElement(delSegId);
+            LocationCurve delLc = delSeg?.Location as LocationCurve;
+            if (delLc == null) throw new InvalidOperationException("无法获取待移动段的定位曲线");
 
             XYZ newHorizStart, newHorizEnd;
             if (geom.LiftRight)
@@ -256,34 +259,40 @@ namespace MEPTools.MEPHighLowUpDown
                 newHorizEnd = geom.P1;
             }
 
+            // 1. 在打断点获取保留段的截面方向，用于后续垂直过渡段的旋转对齐
+            XYZ targetBasisX = null;
+            Connector ca = GetConnectorAtPoint(keepSeg, geom.P0);
+            if (ca != null) targetBasisX = new XYZ(ca.CoordinateSystem.BasisX.X, ca.CoordinateSystem.BasisX.Y, 0).Normalize();
+
+            // 2. 参考 HighLow：不删除重建，而是直接修改原线段的 LocationCurve，并强制断开连接
+            HighLowMEPAligner.DisconnectConnectors(delSeg);
+            delLc.Curve = Line.CreateBound(newHorizStart, newHorizEnd);
+            doc.Regenerate();
+
+            // 3. 创建过渡段
             Element ramp = CreateMEPCurve(doc, elemType, typeId, levelId, systemTypeId,
                 diameter, width, height, geom.P0, geom.P1);
             if (ramp == null) throw new InvalidOperationException("过渡段创建失败");
 
-            Element newHoriz = null;
-            if (!newHorizStart.IsAlmostEqualTo(newHorizEnd, 1e-6))
-            {
-                newHoriz = CreateMEPCurve(doc, elemType, typeId, levelId, systemTypeId,
-                    diameter, width, height, newHorizStart, newHorizEnd);
-                if (newHoriz == null) throw new InvalidOperationException("新高度段创建失败");
-            }
+            // 4. 参考 HighLow：如果是垂直段，必须旋转以匹配管件的 BasisX 截面方向
+            if (targetBasisX != null)
+                AlignVerticalMEP(doc, ramp, geom.P0, targetBasisX);
 
             doc.Regenerate();
 
+            // 5. 重新生成弯头（不再强制设置 Angle 参数）
             if (geom.LiftRight)
             {
-                TryCreateElbow(doc, keepSegId, ramp.Id, geom.P0, geom.AngleDeg, "弯头1（原段-过渡段）");
-                if (newHoriz != null)
-                    TryCreateElbow(doc, ramp.Id, newHoriz.Id, geom.P1, geom.AngleDeg, "弯头2（过渡段-新高度段）");
+                TryCreateElbow(doc, keepSegId, ramp.Id, geom.P0, "弯头1（原段-过渡段）");
+                TryCreateElbow(doc, ramp.Id, delSegId, geom.P1, "弯头2（过渡段-新高度段）");
             }
             else
             {
-                if (newHoriz != null)
-                    TryCreateElbow(doc, newHoriz.Id, ramp.Id, geom.P1, geom.AngleDeg, "弯头1（新高度段-过渡段）");
-                TryCreateElbow(doc, ramp.Id, keepSegId, geom.P0, geom.AngleDeg, "弯头2（过渡段-原段）");
+                TryCreateElbow(doc, delSegId, ramp.Id, geom.P1, "弯头1（新高度段-过渡段）");
+                TryCreateElbow(doc, ramp.Id, keepSegId, geom.P0, "弯头2（过渡段-原段）");
             }
 
-            liftedEndElementId = newHoriz != null ? newHoriz.Id : ramp.Id;
+            liftedEndElementId = delSegId;
             ReconnectExternal(doc, keepSegId, fixedEndPt, extAtFixed, "固定侧");
 
             return true;
@@ -318,82 +327,37 @@ namespace MEPTools.MEPHighLowUpDown
             return el;
         }
 
-        private void ReconnectAtLiftedEnd(Document doc, ElementId liftedElemId, XYZ expectedPt, List<ElementId> movedIds)
+        /// <summary>
+        /// 参考 HighLow 中垂直过渡段的处理方案，通过旋转使风管/线槽截面匹配原管
+        /// </summary>
+        private void AlignVerticalMEP(Document doc, Element el, XYZ s, XYZ targetBasisX)
         {
-            if (liftedElemId == ElementId.InvalidElementId) return;
+            if (el == null || targetBasisX == null) return;
+            var line = (el.Location as LocationCurve)?.Curve as Line;
+            if (line == null || Math.Abs(line.Direction.Z) <= 0.99) return; // 只有垂直段才处理
+
             doc.Regenerate();
-            Element liftedElem = doc.GetElement(liftedElemId);
-            if (liftedElem == null) return;
-            ConnectorManager liftedCm = GetConnectorManager(liftedElem);
-            if (liftedCm == null) return;
+            Connector cr = GetConnectorAtPoint(el, s);
+            if (cr == null) return;
 
-            double tol = UnitUtils.ConvertToInternalUnits(30.0, UnitTypeId.Millimeters);
-            Connector liftedConn = FindNearestConnector(liftedCm, expectedPt, out double d1);
+            XYZ vecR = new XYZ(cr.CoordinateSystem.BasisX.X, cr.CoordinateSystem.BasisX.Y, 0).Normalize();
+            if (vecR.GetLength() < 1e-6) return;
 
-            if (liftedConn == null || d1 > tol)
+            double dot = targetBasisX.DotProduct(vecR);
+            double cross = targetBasisX.X * vecR.Y - targetBasisX.Y * vecR.X;
+            double angle = Math.Acos(Math.Max(-1.0, Math.Min(1.0, dot)));
+            if (cross < 0) angle = -angle;
+
+            if (Math.Abs(angle) > Math.PI / 180.0)
             {
-                if (liftedElem.Location is LocationCurve lc)
-                {
-                    XYZ p0 = lc.Curve.GetEndPoint(0);
-                    XYZ p1 = lc.Curve.GetEndPoint(1);
-                    XYZ fallback = p0.DistanceTo(expectedPt) <= p1.DistanceTo(expectedPt) ? p0 : p1;
-                    Connector alt = FindNearestConnector(liftedCm, fallback, out double d2);
-                    if (alt != null && d2 <= tol) liftedConn = alt;
-                }
-            }
-            if (liftedConn == null || liftedConn.IsConnected) return;
-
-            foreach (ElementId eid in movedIds)
-            {
-                Element e = doc.GetElement(eid);
-                if (e == null) continue;
-                ConnectorManager cm = GetConnectorManager(e);
-                if (cm == null) continue;
-                Connector best = FindNearestConnector(cm, liftedConn.Origin, out double bd);
-                if (best == null || bd > tol || best.IsConnected) continue;
-                try { liftedConn.ConnectTo(best); return; } catch { }
-            }
-        }
-
-        private Connector FindNearestConnector(ConnectorManager cm, XYZ target, out double distance)
-        {
-            Connector best = null;
-            distance = double.MaxValue;
-            if (cm == null) return null;
-            foreach (Connector c in cm.Connectors)
-            {
-                double d = c.Origin.DistanceTo(target);
-                if (d < distance) { distance = d; best = c; }
-            }
-            return best;
-        }
-
-        private void SyncMoveConnectedElements(Document doc, List<ElementId> connectedIds, XYZ originalLiftPt, double h_offset_ft)
-        {
-            XYZ offsetVec = XYZ.BasisZ * h_offset_ft;
-            foreach (ElementId ceId in connectedIds)
-            {
-                Element ce = doc.GetElement(ceId);
-                if (ce == null) continue;
                 try
                 {
-                    if (ce is MEPCurve mepCurve)
-                    {
-                        LocationCurve lcc = mepCurve.Location as LocationCurve;
-                        if (lcc == null || !(lcc.Curve is Line)) { ElementTransformUtils.MoveElement(doc, ceId, offsetVec); continue; }
-                        XYZ p0 = lcc.Curve.GetEndPoint(0), p1 = lcc.Curve.GetEndPoint(1);
-                        XYZ newP0 = p0, newP1 = p1;
-                        if (p0.DistanceTo(originalLiftPt) <= p1.DistanceTo(originalLiftPt)) newP0 = p0 + offsetVec;
-                        else newP1 = p1 + offsetVec;
-                        if (newP0.DistanceTo(newP1) < 1e-6) continue;
-                        try { lcc.Curve = Line.CreateBound(newP0, newP1); }
-                        catch { ElementTransformUtils.MoveElement(doc, ceId, offsetVec); }
-                    }
-                    else if (ce is FamilyInstance) ElementTransformUtils.MoveElement(doc, ceId, offsetVec);
+                    Line axis = Line.CreateUnbound(s, XYZ.BasisZ);
+                    ElementTransformUtils.RotateElement(doc, el.Id, axis, angle);
+                    doc.Regenerate();
                 }
                 catch { }
             }
-            doc.Regenerate();
         }
 
         private bool ProcessCableTray(Document doc, CableTray tray, UpDownGeometry geom,
@@ -409,6 +373,15 @@ namespace MEPTools.MEPHighLowUpDown
             XYZ trayStart = lc.Curve.GetEndPoint(0);
             XYZ trayEnd = lc.Curve.GetEndPoint(1);
 
+            // 记录原线槽的截面方向
+            XYZ targetBasisX = null;
+            ConnectorManager cm = GetConnectorManager(tray);
+            if (cm != null)
+            {
+                Connector cOrig = FindNearestConnector(cm, geom.P0, out _) ?? FindNearestConnector(cm, geom.P1, out _);
+                if (cOrig != null) targetBasisX = new XYZ(cOrig.CoordinateSystem.BasisX.X, cOrig.CoordinateSystem.BasisX.Y, 0).Normalize();
+            }
+
             doc.Delete(tray.Id);
             doc.Regenerate();
 
@@ -416,26 +389,34 @@ namespace MEPTools.MEPHighLowUpDown
             const double endpointTol = 1e-4;
             XYZ newEnd = trayEnd + XYZ.BasisZ * geom.Offset;
             XYZ newStart = trayStart + XYZ.BasisZ * geom.Offset;
+            Element verticalSeg = null;
 
             if (geom.LiftRight)
             {
                 if (!trayStart.IsAlmostEqualTo(geom.P0, endpointTol)) { Element s1 = CreateCableTraySegment(doc, typeId, levelId, width, height, trayStart, geom.P0); if (s1 != null) segs.Add(s1); }
-                Element s2 = CreateCableTraySegment(doc, typeId, levelId, width, height, geom.P0, geom.P1); if (s2 != null) segs.Add(s2);
+                verticalSeg = CreateCableTraySegment(doc, typeId, levelId, width, height, geom.P0, geom.P1); if (verticalSeg != null) segs.Add(verticalSeg);
                 if (!geom.P1.IsAlmostEqualTo(newEnd, endpointTol)) { Element s3 = CreateCableTraySegment(doc, typeId, levelId, width, height, geom.P1, newEnd); if (s3 != null) segs.Add(s3); }
             }
             else
             {
                 if (!newStart.IsAlmostEqualTo(geom.P1, endpointTol)) { Element s1 = CreateCableTraySegment(doc, typeId, levelId, width, height, newStart, geom.P1); if (s1 != null) segs.Add(s1); }
-                Element s2 = CreateCableTraySegment(doc, typeId, levelId, width, height, geom.P1, geom.P0); if (s2 != null) segs.Add(s2);
+                verticalSeg = CreateCableTraySegment(doc, typeId, levelId, width, height, geom.P1, geom.P0); if (verticalSeg != null) segs.Add(verticalSeg);
                 if (!geom.P0.IsAlmostEqualTo(trayEnd, endpointTol)) { Element s3 = CreateCableTraySegment(doc, typeId, levelId, width, height, geom.P0, trayEnd); if (s3 != null) segs.Add(s3); }
             }
 
             doc.Regenerate();
 
+            // 对齐垂直过渡段
+            if (verticalSeg != null)
+            {
+                XYZ jointPt = geom.LiftRight ? geom.P0 : geom.P1;
+                AlignVerticalMEP(doc, verticalSeg, jointPt, targetBasisX);
+            }
+
             for (int i = 0; i < segs.Count - 1; i++)
             {
                 XYZ joint = FindCommonEndPoint(segs[i], segs[i + 1]);
-                if (joint != null) TryCreateElbow(doc, segs[i].Id, segs[i + 1].Id, joint, geom.AngleDeg, $"CT弯头{i + 1}");
+                if (joint != null) TryCreateElbow(doc, segs[i].Id, segs[i + 1].Id, joint, $"CT弯头{i + 1}");
             }
 
             if (segs.Count > 0)
@@ -470,7 +451,8 @@ namespace MEPTools.MEPHighLowUpDown
             return null;
         }
 
-        private bool TryCreateElbow(Document doc, ElementId idA, ElementId idB, XYZ atPt, double angleDeg, string tag)
+        // 移除了强制设置角度参数的逻辑，因为标准弯头不需要手动设角度，强设会导致族拉伸和管件错乱
+        private bool TryCreateElbow(Document doc, ElementId idA, ElementId idB, XYZ atPt, string tag)
         {
             Element elA = doc.GetElement(idA);
             Element elB = doc.GetElement(idB);
@@ -496,21 +478,10 @@ namespace MEPTools.MEPHighLowUpDown
 
             if (dist > maxAllowed) return false;
 
-            double elbowDeg = MEPUpDownCalculator.CalcElbowAngleDeg(ca, cb);
-            if (!MEPUpDownCalculator.IsElbowAngleValid(elbowDeg)) return false;
-
             try
             {
                 FamilyInstance fit = doc.Create.NewElbowFitting(ca, cb);
-                if (fit == null) return false;
-                Parameter angleParam = fit.LookupParameter("Angle") ?? fit.LookupParameter("角度")
-                    ?? fit.LookupParameter("Bend Angle") ?? fit.LookupParameter("弯头角度");
-                if (angleParam != null && !angleParam.IsReadOnly && angleParam.StorageType == StorageType.Double)
-                {
-                    try { angleParam.Set(angleDeg); }
-                    catch { angleParam.Set(angleDeg * Math.PI / 180.0); }
-                }
-                return true;
+                return fit != null;
             }
             catch { return false; }
         }
@@ -548,6 +519,84 @@ namespace MEPTools.MEPHighLowUpDown
             try { c.ConnectTo(externalConn); } catch { }
         }
 
+        /// <summary>
+        /// 同步移动与抬升端相连的其他设备/管线（保证在同一高度）
+        /// </summary>
+        private void SyncMoveConnectedElements(Document doc, List<ElementId> connectedIds, XYZ originalLiftPt, double h_offset_ft)
+        {
+            XYZ offsetVec = XYZ.BasisZ * h_offset_ft;
+            foreach (ElementId ceId in connectedIds)
+            {
+                Element ce = doc.GetElement(ceId);
+                if (ce == null) continue;
+                try
+                {
+                    if (ce is MEPCurve mepCurve)
+                    {
+                        LocationCurve lcc = mepCurve.Location as LocationCurve;
+                        if (lcc == null || !(lcc.Curve is Line))
+                        {
+                            ElementTransformUtils.MoveElement(doc, ceId, offsetVec);
+                            continue;
+                        }
+                        XYZ p0 = lcc.Curve.GetEndPoint(0), p1 = lcc.Curve.GetEndPoint(1);
+                        XYZ newP0 = p0, newP1 = p1;
+                        if (p0.DistanceTo(originalLiftPt) <= p1.DistanceTo(originalLiftPt)) newP0 = p0 + offsetVec;
+                        else newP1 = p1 + offsetVec;
+                        if (newP0.DistanceTo(newP1) < 1e-6) continue;
+                        try { lcc.Curve = Line.CreateBound(newP0, newP1); }
+                        catch { ElementTransformUtils.MoveElement(doc, ceId, offsetVec); }
+                    }
+                    else if (ce is FamilyInstance)
+                    {
+                        ElementTransformUtils.MoveElement(doc, ceId, offsetVec);
+                    }
+                }
+                catch { }
+            }
+            doc.Regenerate();
+        }
+
+        /// <summary>
+        /// 在抬升端重新连接被同步移动的元素，保持系统连通性
+        /// </summary>
+        private void ReconnectAtLiftedEnd(Document doc, ElementId liftedElemId, XYZ expectedPt, List<ElementId> movedIds)
+        {
+            if (liftedElemId == ElementId.InvalidElementId) return;
+            doc.Regenerate();
+            Element liftedElem = doc.GetElement(liftedElemId);
+            if (liftedElem == null) return;
+            ConnectorManager liftedCm = GetConnectorManager(liftedElem);
+            if (liftedCm == null) return;
+
+            double tol = UnitUtils.ConvertToInternalUnits(30.0, UnitTypeId.Millimeters);
+            Connector liftedConn = FindNearestConnector(liftedCm, expectedPt, out double d1);
+
+            if (liftedConn == null || d1 > tol)
+            {
+                if (liftedElem.Location is LocationCurve lc)
+                {
+                    XYZ p0 = lc.Curve.GetEndPoint(0);
+                    XYZ p1 = lc.Curve.GetEndPoint(1);
+                    XYZ fallback = p0.DistanceTo(expectedPt) <= p1.DistanceTo(expectedPt) ? p0 : p1;
+                    Connector alt = FindNearestConnector(liftedCm, fallback, out double d2);
+                    if (alt != null && d2 <= tol) liftedConn = alt;
+                }
+            }
+            if (liftedConn == null || liftedConn.IsConnected) return;
+
+            foreach (ElementId eid in movedIds)
+            {
+                Element e = doc.GetElement(eid);
+                if (e == null) continue;
+                ConnectorManager cm = GetConnectorManager(e);
+                if (cm == null) continue;
+                Connector best = FindNearestConnector(cm, liftedConn.Origin, out double bd);
+                if (best == null || bd > tol || best.IsConnected) continue;
+                try { liftedConn.ConnectTo(best); return; } catch { }
+            }
+        }
+
         private ElementId GetLevelId(Element elem, MEPElementType elemType)
         {
             ElementId levelId = elem.LevelId;
@@ -574,6 +623,19 @@ namespace MEPTools.MEPHighLowUpDown
             if (elem is MEPCurve mep) return mep.ConnectorManager;
             if (elem is FamilyInstance fi && fi.MEPModel != null) return fi.MEPModel.ConnectorManager;
             return null;
+        }
+
+        private Connector FindNearestConnector(ConnectorManager cm, XYZ target, out double distance)
+        {
+            Connector best = null;
+            distance = double.MaxValue;
+            if (cm == null) return null;
+            foreach (Connector c in cm.Connectors)
+            {
+                double d = c.Origin.DistanceTo(target);
+                if (d < distance) { distance = d; best = c; }
+            }
+            return best;
         }
 
         private Connector GetConnectorAtPoint(Element elem, XYZ targetPt)
