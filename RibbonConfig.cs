@@ -52,8 +52,12 @@ namespace MEPTools
                 
                 new ButtonConfig { Text = "MEPTag60°", ToolTip = "将选中的标记（Tag）修改标记引线为60度折线", CommandType = typeof(MEPTools.TagLeaderStyle60.Command) },
 
+
                 // ================= 4. 其他辅助工具 (面板直接展示) =================
-                new ButtonConfig { Text = "链接墙洞", ToolTip = "在链接模型（如建筑墙）上批量创建墙洞", CommandType = typeof(MEPTools.LinkElementWallHole.Command) },
+                
+                // ⭐【修改点】：将链接墙洞及它的设置打包进 "墙洞工具" 下拉菜单
+                new ButtonConfig { Text = "链接墙洞", ToolTip = "在链接模型（如建筑墙）上批量创建墙洞", CommandType = typeof(MEPTools.LinkElementWallHole.Command), PulldownGroup = "墙洞工具" },
+                new ButtonConfig { Text = "墙洞设置", ToolTip = "配置墙洞族、类型、标高、参数名、预留偏移等", CommandType = typeof(MEPTools.LinkElementWallHole.Cmd_WallHoleSettings), PulldownGroup = "墙洞工具" },
                 
                 // 【批量打断按钮】
                 new ButtonConfig { Text = "批量打断管线", ToolTip = "选中多个 MEP 管线后，指定打断点，批量执行保留原 ID 的打断并恢复连接", CommandType = typeof(MEPTools.MEPBatchBreak.Command) },
@@ -63,7 +67,7 @@ namespace MEPTools
                 new ButtonConfig { Text = "系统检查", ToolTip = "检查 MEP 系统的连通性及参数完整性", CommandType = typeof(MEPTools.SystemChecker.Command) },
                 new ButtonConfig { Text = "DUCT更新尺寸", ToolTip = "更新DUCT尺寸", CommandType = typeof(MEPTools.DuctResize.Command) },
 
-                // ================= 5. 工作集管理 (下拉菜单) ⭐新增 =================
+                // ================= 5. 工作集管理 (下拉菜单) =================
                 new ButtonConfig { Text = "改元素到默认工作集", ToolTip = "将选中的 MEP 元素批量修改为当前文档的活动工作集", CommandType = typeof(MEPTools.WorksetManager.CmdChangeWorkset), PulldownGroup = "工作集管理" },
                 new ButtonConfig { Text = "提取并设为默认工作集", ToolTip = "选择参考元素，将其所属工作集提取并设为当前文档的默认（活动）工作集", CommandType = typeof(MEPTools.WorksetManager.CmdSetDefaultWorkset), PulldownGroup = "工作集管理" },
             };
