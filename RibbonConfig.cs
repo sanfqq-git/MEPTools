@@ -28,8 +28,10 @@ namespace MEPTools
                 new ButtonConfig { Text = "高差三通连接", ToolTip = "有高差的两组MEP 元素，生成高差三通", CommandType = typeof(MEPTools.MEP3TeeConnect.Command), PulldownGroup = "连接工具" },
                 new ButtonConfig { Text = "高差相交双三通连接", ToolTip = "高差相交的两组MEP 元素，生成双三通", CommandType = typeof(MEPTools.MEP3TeeCrossConnect.Command), PulldownGroup = "连接工具" },
 
-                // 高低连接命令
-                new ButtonConfig { Text = "高低连接", ToolTip = "有高差的两组MEP 元素，设角度生成连接", CommandType = typeof(MEPTools.MEPConnector.HighLow.Command), PulldownGroup = "连接工具" },
+                // 高低连接 —— 拆分为三个独立角度命令
+                new ButtonConfig { Text = "高低连接 45°",   ToolTip = "有高差的两组MEP 元素，以固定 45° 斜段生成连接", CommandType = typeof(MEPTools.MEPConnector.HighLow.Command45Degree),    PulldownGroup = "连接工具" },
+                new ButtonConfig { Text = "高低连接 90°",   ToolTip = "有高差的两组MEP 元素，以纯垂直方式（90°）生成连接", CommandType = typeof(MEPTools.MEPConnector.HighLow.Command90Degree),    PulldownGroup = "连接工具" },
+                new ButtonConfig { Text = "高低连接 自定义", ToolTip = "有高差的两组MEP 元素，输入 1~90° 自定义角度生成连接", CommandType = typeof(MEPTools.MEPConnector.HighLow.CommandCustomAngle), PulldownGroup = "连接工具" },
 
                 // 平面共线、转角连接命令
                 new ButtonConfig { Text = "平面共线连接", ToolTip = "同轴的两组MEP元素，直接延长并合并", CommandType = typeof(MEPTools.MEPConnector.Planar.Commands.CollinearCommand), PulldownGroup = "连接工具" },

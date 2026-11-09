@@ -6,7 +6,6 @@ using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
 using MEPTools.Shared;
-// 【修改】移除 using MEPTools.MEPConnector.Shared;（原共享类已拆走）
 
 using Connector = Autodesk.Revit.DB.Connector;
 
@@ -84,12 +83,8 @@ namespace MEPTools.MEPConnector.HighLow
             return s;
         }
 
-        /// <summary>
-        /// 强制将 B 组管在水平面上平移到 A 组管轴线上（保持 Z 坐标不变）
-        /// </summary>
         public bool AlignPair(Document doc, Element a, Element b)
         {
-            // 【修改】改为 HighLow 专用 Aligner（保持原 1e-3 行为）
             return HighLowMEPAligner.AlignPair(doc, a, b);
         }
 
@@ -134,6 +129,9 @@ namespace MEPTools.MEPConnector.HighLow
 
             try
             {
+                // 1. 强制断开连接
+                HighLowMEPAligner.DisconnectConnectors(b);
+
                 bCurve.Curve = Line.CreateBound(newStart, newEnd);
                 doc.Regenerate();
                 _log.AppendLine("  ✓ B 组管端点已调整：" + MEPConnectorCalculator.Fmt(bNear)
@@ -143,31 +141,27 @@ namespace MEPTools.MEPConnector.HighLow
             { _log.AppendLine("✗ 修改 B 组管失败：" + ex.Message); return false; }
 
             var snap = CaptureSnapshot(a);
-            Element ramp = CreateMEPCurve(doc, snap, g.PA, g.PB);
-            if (ramp == null) { _log.AppendLine("✗ 过渡管创建失败"); return false; }
 
-            if (horizontalDist < tolDist && (ramp is Duct || ramp is CableTray))
+            // 2. 计算是否需要旋转（用于精确对齐截面）
+            double rotateAngle = 0;
+            // 90度垂直连接时（水平距离接近于 0），需要检查截面方向
+            if (horizontalDist < tolDist && (snap.Kind == MepKind.Duct || snap.Kind == MepKind.CableTray))
             {
                 Connector ca = GetConnectorAtPoint(a, g.PA);
                 if (ca != null)
                 {
-                    XYZ basisX = ca.CoordinateSystem.BasisX;
-                    if (Math.Abs(basisX.Y) > Math.Abs(basisX.X))
-                    {
-                        _log.AppendLine("  [INFO] 检测到 90 度垂直过渡管宽高方向反置，执行旋转以避免穿模。");
-                        try
-                        {
-                            Line axis = Line.CreateUnbound(g.PA, XYZ.BasisZ);
-                            ElementTransformUtils.RotateElement(doc, ramp.Id, axis, Math.PI / 2);
-                            _log.AppendLine("  ✓ 垂直过渡管已原地旋转 90 度以对齐截面");
-                        }
-                        catch (Exception ex)
-                        {
-                            _log.AppendLine("  ✗ 旋转过渡管失败：" + ex.Message);
-                        }
-                    }
+                    // 获取 A 组管截面的 X 轴方向
+                    XYZ vecA = ca.CoordinateSystem.BasisX;
+                    vecA = new XYZ(vecA.X, vecA.Y, 0).Normalize();
+
+                    // 计算立管默认的截面 X 轴（通常是全局 X 或 Y 轴）
+                    // 这里我们先创建，再计算差角更准确，因此 rotateAngle 先传 0，后在 CreateMEPCurve 内部计算
                 }
             }
+
+            // 3. 创建过渡管
+            Element ramp = CreateMEPCurve(doc, snap, g.PA, g.PB, a, rotateAngle);
+            if (ramp == null) { _log.AppendLine("✗ 过渡管创建失败"); return false; }
 
             doc.Regenerate();
             _log.AppendLine("  ✓ 过渡管 ID=" + ramp.Id.IntegerValue);
@@ -179,7 +173,7 @@ namespace MEPTools.MEPConnector.HighLow
             return true;
         }
 
-        private Element CreateMEPCurve(Document doc, Snap snap, XYZ s, XYZ e)
+        private Element CreateMEPCurve(Document doc, Snap snap, XYZ s, XYZ e, Element elA, double _)
         {
             if (s == null || e == null) return null;
             if (s.IsAlmostEqualTo(e, 1e-6)) return null;
@@ -233,6 +227,49 @@ namespace MEPTools.MEPConnector.HighLow
                     }
                     break;
             }
+
+            // 4. 【核心修复】精确计算旋转角度以对齐截面，避免“强制平行/垂直屏幕”
+            if (el != null && (el is Duct || el is CableTray))
+            {
+                // 仅当新创建的过渡管是垂直状态时（即水平距离几乎为0）
+                var line = (el.Location as LocationCurve)?.Curve as Line;
+                if (line != null && Math.Abs(line.Direction.Z) > 0.99)
+                {
+                    doc.Regenerate(); // 必须刷新，确保新管件的 Connector 坐标系已经生成
+                    
+                    Connector ca = GetConnectorAtPoint(elA, s);
+                    Connector cr = GetConnectorAtPoint(el, s);
+
+                    if (ca != null && cr != null)
+                    {
+                        XYZ vecA = new XYZ(ca.CoordinateSystem.BasisX.X, ca.CoordinateSystem.BasisX.Y, 0).Normalize();
+                        XYZ vecR = new XYZ(cr.CoordinateSystem.BasisX.X, cr.CoordinateSystem.BasisX.Y, 0).Normalize();
+
+                        // 计算两个向量在平面上的夹角
+                        double dot = vecA.DotProduct(vecR);
+                        double cross = vecA.X * vecR.Y - vecA.Y * vecR.X;
+                        double angle = Math.Acos(Math.Max(-1.0, Math.Min(1.0, dot)));
+                        if (cross < 0) angle = -angle;
+
+                        // 如果角度差大于 1度，才进行旋转
+                        if (Math.Abs(angle) > Math.PI / 180.0)
+                        {
+                            try
+                            {
+                                Line axis = Line.CreateUnbound(s, XYZ.BasisZ);
+                                ElementTransformUtils.RotateElement(doc, el.Id, axis, angle);
+                                doc.Regenerate();
+                                _log.AppendLine($"  ✓ 垂直过渡管已精确旋转 {angle * 180 / Math.PI:F1} 度以匹配 A 管截面");
+                            }
+                            catch (Exception ex)
+                            {
+                                _log.AppendLine("  ✗ 旋转过渡管失败：" + ex.Message);
+                            }
+                        }
+                    }
+                }
+            }
+
             return el;
         }
 

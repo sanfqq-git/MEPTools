@@ -3,13 +3,8 @@ using Autodesk.Revit.DB;
 
 namespace MEPTools.MEPConnector.HighLow
 {
-    /// <summary>
-    /// 高差连接场景的 B→A 水平对齐工具。
-    /// 保持原 MEPConnectorUtils.AlignPair 的平行度容差（1e-3），行为与原版一致。
-    /// </summary>
     public static class HighLowMEPAligner
     {
-        // 保持原共享类行为，不改变高差插件语义
         private const double ParallelTolCross = 1e-3;
 
         public static bool AlignPair(Document doc, Element a, Element b)
@@ -42,6 +37,7 @@ namespace MEPTools.MEPConnector.HighLow
 
             try
             {
+                DisconnectConnectors(b);
                 LocationCurve lcB = b.Location as LocationCurve;
                 XYZ newB0 = new XYZ(b0.X + moveVec.X, b0.Y + moveVec.Y, b0.Z);
                 XYZ newB1 = new XYZ(b1.X + moveVec.X, b1.Y + moveVec.Y, b1.Z);
@@ -49,6 +45,23 @@ namespace MEPTools.MEPConnector.HighLow
                 return true;
             }
             catch { return false; }
+        }
+
+        public static void DisconnectConnectors(Element e)
+        {
+            var mep = e as MEPCurve;
+            if (mep == null || mep.ConnectorManager == null) return;
+            
+            foreach (Connector c in mep.ConnectorManager.Connectors)
+            {
+                if (c.IsConnected)
+                {
+                    foreach (Connector refC in c.AllRefs)
+                    {
+                        c.DisconnectFrom(refC);
+                    }
+                }
+            }
         }
     }
 }
