@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using Autodesk.Revit.DB;
 using MEPTools.Shared;
-using MEPTools.MEPConnector.Shared;
 using Connector = Autodesk.Revit.DB.Connector;
 
 namespace MEPTools.MEPConnector.Planar.Core
@@ -16,12 +16,12 @@ namespace MEPTools.MEPConnector.Planar.Core
 
         public bool AlignPair(Document doc, Element a, Element b)
         {
-            return MEPConnectorUtils.AlignPair(doc, a, b);
+            return PlanarMEPAligner.AlignPair(doc, a, b);
         }
 
         public bool ProcessCollinear(Document doc, Element a, Element b)
         {
-            if (a == null || b == null || !a.IsValidObject || !b.IsValidObject) 
+            if (a == null || b == null || !a.IsValidObject || !b.IsValidObject)
             {
                 _log.AppendLine("✗ [共线] 传入元素无效或已被删除");
                 return false;
@@ -30,15 +30,16 @@ namespace MEPTools.MEPConnector.Planar.Core
             var g = PlanarConnectorCalculator.ComputeCollinear(a, b);
             if (!g.IsValid) { _log.AppendLine("✗ [共线] 计算失败: " + g.ErrorMessage); return false; }
 
+            // 校验 A 内侧端（PA）是否连接了 A/B 以外的元素
+            if (!IsInnerEndFree(a, b, g.PA, out string innerDetail))
+            {
+                _log.AppendLine($"✗ [共线] A({a.Id}) 内侧端已连接外部元素，合并后会断开；已跳过");
+                _log.AppendLine("     " + innerDetail);
+                return false;
+            }
+
             ElementId idA = a.Id;
             ElementId idB = b.Id;
-
-            // 前置：强行把 A 管的端点拉到与 B 管完全贴合（消除微小的计算误差）
-            if (g.PA.DistanceTo(g.PB) > 1e-4)
-            {
-                MoveEndpointTo(doc, a, g.PA, g.PB);
-                doc.Regenerate();
-            }
 
             if (TryHardMerge(doc, a, b, g))
             {
@@ -50,6 +51,32 @@ namespace MEPTools.MEPConnector.Planar.Core
             return ProcessCollinearFallback(doc, a, b, g);
         }
 
+        private bool IsInnerEndFree(Element host, Element guest, XYZ innerPt, out string detail)
+        {
+            detail = null;
+            Connector c = GetExactConnector(host, innerPt);
+            if (c == null)
+            {
+                detail = "未找到内侧端连接器（坐标偏移，保守放行）";
+                return true;
+            }
+            if (!c.IsConnected) return true;
+
+            bool hasExternal = false;
+            var sb = new StringBuilder();
+            foreach (Connector r in c.AllRefs)
+            {
+                if (r.Owner.Id != host.Id && r.Owner.Id != guest.Id)
+                {
+                    hasExternal = true;
+                    sb.Append($" {r.Owner.Id}({r.Owner.GetType().Name})");
+                }
+            }
+
+            if (hasExternal) detail = "已连接外部元素：" + sb.ToString();
+            return !hasExternal;
+        }
+
         private bool TryHardMerge(Document doc, Element a, Element b, PlanarConnectGeometry g)
         {
             try
@@ -58,55 +85,106 @@ namespace MEPTools.MEPConnector.Planar.Core
                 var lineA = lcA?.Curve as Line;
                 if (lineA == null) return false;
 
-                // 【核心修复 1】：在删除 B 管前，记录下挂在 B 远端的所有连接头（比如截图里那个 45 度弯头）
+                // 1. 备份 A 外侧端连接件
+                Connector aOuterConn = GetExactConnector(a, g.OuterPA);
+                List<Connector> aOuterRefs = new List<Connector>();
+                if (aOuterConn != null && aOuterConn.IsConnected)
+                {
+                    foreach (Connector c in aOuterConn.AllRefs)
+                        if (c.Owner.Id != a.Id) aOuterRefs.Add(c);
+                }
+
+                // 2. 备份 B 外侧端连接件
                 Connector bOuterConn = GetExactConnector(b, g.OuterPB);
-                List<Connector> outerRefs = new List<Connector>();
+                List<Connector> bOuterRefs = new List<Connector>();
                 if (bOuterConn != null && bOuterConn.IsConnected)
                 {
                     foreach (Connector c in bOuterConn.AllRefs)
-                    {
-                        if (c.Owner.Id != b.Id) outerRefs.Add(c);
-                    }
+                        if (c.Owner.Id != b.Id) bOuterRefs.Add(c);
                 }
 
-                XYZ a0 = lineA.GetEndPoint(0);
-                XYZ a1 = lineA.GetEndPoint(1);
-                XYZ preservedA = (g.PA.DistanceTo(a0) < 1e-3) ? a1 : a0;
+                // 3. 断开 A 和 B 的所有连接（核心修复：避免修改曲线时触发 Revit 拓扑警告）
+                DisconnectAll(a);
+                DisconnectAll(b);
 
-                Line newLine;
-                if (a0.DistanceTo(preservedA) < 1e-3)
-                {
-                    newLine = Line.CreateBound(a0, g.OuterPB);
-                }
-                else
-                {
-                    newLine = Line.CreateBound(g.OuterPB, a1);
-                }
-
-                // 1. A 管伸长取代 B 管
-                lcA.Curve = newLine;
-                doc.Regenerate();
-
-                // 2. 删除 B 管（此时斜角弯头会掉落断开）
+                // 4. 删除 B
                 doc.Delete(b.Id);
                 doc.Regenerate();
 
-                // 【核心修复 2】：让 A 管的远端去“接盘” B 管留下的接头
-                if (outerRefs.Count > 0)
+                // 5. 获取新的 A 管坐标，并防止起点/终点反转导致的错误
+                XYZ a0 = lineA.GetEndPoint(0);
+                XYZ a1 = lineA.GetEndPoint(1);
+                
+                // 判断原来的起点(0)是不是内侧点(g.PA)
+                bool paIs0 = g.PA.DistanceTo(a0) < g.PA.DistanceTo(a1);
+                
+                XYZ newStart, newEnd;
+                if (paIs0)
                 {
-                    Connector aOuterConn = GetExactConnector(a, g.OuterPB);
-                    if (aOuterConn != null)
+                    // 如果原点是内侧，为了让新线不反转，我们用原来的外侧点(a1)作为起点
+                    newStart = a1; // OuterPA
+                    newEnd = g.OuterPB;
+                }
+                else
+                {
+                    // 如果原点已经是外侧，起点保持不变
+                    newStart = a0; // OuterPA
+                    newEnd = g.OuterPB;
+                }
+
+                double minLength = UnitUtils.ConvertToInternalUnits(1.0, UnitTypeId.Millimeters);
+                if (newStart.DistanceTo(newEnd) < minLength)
+                {
+                    _log.AppendLine("⚠ [共线] 合并后曲线长度过短，放弃硬合并");
+                    return false;
+                }
+
+                Line newLine = Line.CreateBound(newStart, newEnd);
+                lcA.Curve = newLine;
+                doc.Regenerate();
+
+                // 6. 恢复 A 的外侧连接
+                if (aOuterRefs.Count > 0)
+                {
+                    Connector aNewOuter = GetExactConnector(a, g.OuterPA);
+                    if (aNewOuter != null)
                     {
-                        foreach (var target in outerRefs)
+                        int rec = 0;
+                        foreach (var r in aOuterRefs)
+                        {
+                            if (r.IsValidObject && !r.IsConnected)
+                            {
+                                try { aNewOuter.ConnectTo(r); rec++; } catch { }
+                            }
+                        }
+                        if (rec > 0)
+                            _log.AppendLine($"  [INFO] A 外侧端连接恢复 {rec}/{aOuterRefs.Count}");
+                    }
+                }
+
+                // 7. 恢复 B 的外侧连接（接到 A 的新远端）
+                if (bOuterRefs.Count > 0)
+                {
+                    Connector aFarConn = GetExactConnector(a, g.OuterPB);
+                    if (aFarConn != null)
+                    {
+                        int rec = 0;
+                        foreach (var target in bOuterRefs)
                         {
                             if (target.IsValidObject && !target.IsConnected)
                             {
-                                try { aOuterConn.ConnectTo(target); } catch { }
+                                try { aFarConn.ConnectTo(target); rec++; } catch { }
                             }
                         }
+                        if (rec > 0)
+                            _log.AppendLine($"  [INFO] B 外侧端连接恢复 {rec}/{bOuterRefs.Count}");
+                    }
+                    else
+                    {
+                        _log.AppendLine($"⚠ [共线] A 新远端未找到连接器，{bOuterRefs.Count} 个原始连接无法恢复");
                     }
                 }
-                
+
                 return true;
             }
             catch (Exception ex)
@@ -116,14 +194,38 @@ namespace MEPTools.MEPConnector.Planar.Core
             }
         }
 
+        private void DisconnectAll(Element e)
+        {
+            var cm = GetConnectorManager(e);
+            if (cm == null) return;
+
+            foreach (Connector c in cm.Connectors)
+            {
+                if (c.IsConnected)
+                {
+                    // 拷贝一份 AllRefs，防止遍历时修改集合
+                    var refs = new List<Connector>();
+                    foreach (Connector r in c.AllRefs) refs.Add(r);
+
+                    foreach (Connector r in refs)
+                    {
+                        if (r.Owner.Id != e.Id)
+                        {
+                            try { c.DisconnectFrom(r); } catch { }
+                        }
+                    }
+                }
+            }
+        }
+
         private bool ProcessCollinearFallback(Document doc, Element a, Element b, PlanarConnectGeometry g)
         {
-            Connector ca = GetExactConnector(a, g.PB);
+            Connector ca = GetExactConnector(a, g.PA);
             Connector cb = GetExactConnector(b, g.PB);
 
-            if (ca == null || cb == null) 
+            if (ca == null || cb == null)
             {
-                _log.AppendLine($"✗ [共线-退避] 无法获取端点连接件");
+                _log.AppendLine($"✗ [共线-退避] 无法获取端点连接件 (A@{g.PA} B@{g.PB})");
                 return false;
             }
             if (ca.IsConnectedTo(cb)) return true;
@@ -156,7 +258,7 @@ namespace MEPTools.MEPConnector.Planar.Core
             Connector ca = GetExactConnector(a, g.P);
             Connector cb = GetExactConnector(b, g.P);
 
-            if (ca == null || cb == null) 
+            if (ca == null || cb == null)
             {
                 _log.AppendLine("✗ [转角] 无法获取交点处连接件");
                 return false;
@@ -205,12 +307,22 @@ namespace MEPTools.MEPConnector.Planar.Core
             var cm = GetConnectorManager(elem);
             if (cm == null) return null;
 
+            // 1) 精确匹配
             foreach (Connector c in cm.Connectors)
             {
-                // 将容差从 1e-5 放宽到 1e-4，防止坐标计算舍入误差导致找不到接头
-                if (c.Origin.DistanceTo(pt) < 1e-4) return c; 
+                if (c.Origin.DistanceTo(pt) < 1e-4) return c;
             }
-            return null;
+
+            // 2) 最近兜底
+            Connector best = null;
+            double bestD = double.MaxValue;
+            foreach (Connector c in cm.Connectors)
+            {
+                double d = c.Origin.DistanceTo(pt);
+                if (d < bestD) { bestD = d; best = c; }
+            }
+            double tol = UnitUtils.ConvertToInternalUnits(1.0, UnitTypeId.Millimeters);
+            return (best != null && bestD < tol) ? best : null;
         }
 
         private static ConnectorManager GetConnectorManager(Element elem)

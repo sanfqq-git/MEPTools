@@ -6,7 +6,7 @@ using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
 using MEPTools.Shared;
-using MEPTools.MEPConnector.Shared;
+// 【修改】移除 using MEPTools.MEPConnector.Shared;（原共享类已拆走）
 
 using Connector = Autodesk.Revit.DB.Connector;
 
@@ -88,10 +88,10 @@ namespace MEPTools.MEPConnector.HighLow
         /// 强制将 B 组管在水平面上平移到 A 组管轴线上（保持 Z 坐标不变）
         /// </summary>
         public bool AlignPair(Document doc, Element a, Element b)
-{
-    // 直接调用公共工具类，不用重复写几十行代码了
-    return MEPConnectorUtils.AlignPair(doc, a, b);
-}
+        {
+            // 【修改】改为 HighLow 专用 Aligner（保持原 1e-3 行为）
+            return HighLowMEPAligner.AlignPair(doc, a, b);
+        }
 
         public bool ProcessPair(Document doc, ElementId aId, ElementId bId, double thetaDeg)
         {
@@ -107,9 +107,8 @@ namespace MEPTools.MEPConnector.HighLow
             _log.AppendLine("  B 远端 = " + MEPConnectorCalculator.Fmt(g.BFarPt));
 
             double horizontalDist = new XYZ(g.PA.X - g.PB.X, g.PA.Y - g.PB.Y, 0).GetLength();
-            double tolDist = UnitUtils.ConvertToInternalUnits(1.0, UnitTypeId.Millimeters); // 1mm容差
+            double tolDist = UnitUtils.ConvertToInternalUnits(1.0, UnitTypeId.Millimeters);
 
-            // ---- 修改 B 组管端点：靠 A 组的端点 → P_B ----
             var bCurve = (b as MEPCurve)?.Location as LocationCurve;
             if (bCurve == null) { _log.AppendLine("✗ B 组管无定位曲线"); return false; }
             Line bLine = bCurve.Curve as Line;
@@ -120,7 +119,7 @@ namespace MEPTools.MEPConnector.HighLow
             double d0 = b0.DistanceTo(g.PA);
             double d1 = b1.DistanceTo(g.PA);
             XYZ bNear = (d0 < d1) ? b0 : b1;
-            XYZ bFar  = (d0 < d1) ? b1 : b0;
+            XYZ bFar = (d0 < d1) ? b1 : b0;
 
             XYZ newStart, newEnd;
             if (bNear.IsAlmostEqualTo(b0)) { newStart = g.PB; newEnd = bFar; }
@@ -128,9 +127,9 @@ namespace MEPTools.MEPConnector.HighLow
 
             double minLength = UnitUtils.ConvertToInternalUnits(10.0, UnitTypeId.Millimeters);
             if (newStart.DistanceTo(newEnd) < minLength)
-            { 
-                _log.AppendLine("✗ 修改后 B 组管长度过短，易导致崩溃"); 
-                return false; 
+            {
+                _log.AppendLine("✗ 修改后 B 组管长度过短，易导致崩溃");
+                return false;
             }
 
             try
@@ -143,12 +142,10 @@ namespace MEPTools.MEPConnector.HighLow
             catch (Exception ex)
             { _log.AppendLine("✗ 修改 B 组管失败：" + ex.Message); return false; }
 
-            // ---- 创建过渡管（用 A 组管类型）----
             var snap = CaptureSnapshot(a);
             Element ramp = CreateMEPCurve(doc, snap, g.PA, g.PB);
             if (ramp == null) { _log.AppendLine("✗ 过渡管创建失败"); return false; }
-            
-            // 90 度防扭曲处理
+
             if (horizontalDist < tolDist && (ramp is Duct || ramp is CableTray))
             {
                 Connector ca = GetConnectorAtPoint(a, g.PA);
@@ -175,9 +172,8 @@ namespace MEPTools.MEPConnector.HighLow
             doc.Regenerate();
             _log.AppendLine("  ✓ 过渡管 ID=" + ramp.Id.IntegerValue);
 
-            // ---- 2 个弯头 ----
             bool ok1 = TryCreateElbow(doc, aId, ramp.Id, g.PA, "弯头1(A-过渡管)");
-            if (ok1) doc.Regenerate(); 
+            if (ok1) doc.Regenerate();
             TryCreateElbow(doc, ramp.Id, bId, g.PB, "弯头2(过渡管-B)");
 
             return true;
@@ -273,7 +269,7 @@ namespace MEPTools.MEPConnector.HighLow
             catch (Exception ex)
             {
                 _log.AppendLine($"✗ {tag} 底层连接失败: {ex.Message}");
-                return false; 
+                return false;
             }
         }
 

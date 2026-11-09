@@ -7,9 +7,9 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
 using MEPTools.Shared;
-using MEPTools.MEPConnector.Planar.Core; // 【修改】更新命名空间引用
+using MEPTools.MEPConnector.Planar.Core;
 
-namespace MEPTools.MEPConnector.Planar.Commands // 【修改】更新命名空间
+namespace MEPTools.MEPConnector.Planar.Commands
 {
     [Transaction(TransactionMode.Manual)]
     public class CollinearCommand : IExternalCommand
@@ -38,7 +38,6 @@ namespace MEPTools.MEPConnector.Planar.Commands // 【修改】更新命名空�
 
                 try
                 {
-                    // ---------- 2. A 组 ----------
                     if (preselectedCurves.Count > 0)
                     {
                         aList = preselectedCurves;
@@ -51,18 +50,14 @@ namespace MEPTools.MEPConnector.Planar.Commands // 【修改】更新命名空�
                     else
                     {
                         InfoCenterTip.Show("请选择 A 组 MEP 元素（按空格键结束）");
-
                         IList<Reference> refsA = uidoc.Selection.PickObjects(
                             ObjectType.Element, filter, "第一步：请选择 A 组元素（按空格键结束）");
                         aList = refsA.Select(r => doc.GetElement(r)).ToList();
-
                         uidoc.Selection.SetElementIds(new List<ElementId>());
-
                         InfoCenterTip.Show(
                             $"已选择 A 组 {aList.Count} 个，请选择 B 组（空格键确认）");
                     }
 
-                    // ---------- 3. B 组 ----------
                     IList<Reference> refsB = uidoc.Selection.PickObjects(
                         ObjectType.Element, filter, "第二步：请选择 B 组元素（按空格键结束）");
                     bList = refsB.Select(r => doc.GetElement(r)).ToList();
@@ -92,9 +87,9 @@ namespace MEPTools.MEPConnector.Planar.Commands // 【修改】更新命名空�
                 return Result.Cancelled;
             }
 
-            // ---------- 【新增】前置水平对齐检测 ----------
+            // ---------- 前置水平对齐检测 ----------
             int nonCollinearCount = 0;
-            double minDeviationMm = 1.0; // 容差 1mm
+            double minDeviationMm = 1.0;
             var pairsWithDeviation = new List<ConnectorPair>();
 
             foreach (var pair in pairs)
@@ -103,10 +98,7 @@ namespace MEPTools.MEPConnector.Planar.Commands // 【修改】更新命名空�
                 Element elB = doc.GetElement(pair.BId);
                 if (elA == null || elB == null) continue;
 
-                // 计算两管的水平错位距离
                 double dev = PlanarConnectorCalculator.GetHorizontalDeviation(elA, elB);
-                
-                // 若不是完全不平行状态，且偏差大于 1mm，则加入待对齐列表
                 if (dev != double.MaxValue && dev * PlanarConnectorCalculator.FtToMm > minDeviationMm)
                 {
                     nonCollinearCount++;
@@ -123,10 +115,7 @@ namespace MEPTools.MEPConnector.Planar.Commands // 【修改】更新命名空�
                 dialog.CommonButtons = TaskDialogCommonButtons.Yes | TaskDialogCommonButtons.No;
                 dialog.DefaultButton = TaskDialogResult.Yes;
 
-                if (dialog.Show() == TaskDialogResult.Yes)
-                {
-                    doAlign = true;
-                }
+                if (dialog.Show() == TaskDialogResult.Yes) doAlign = true;
                 else
                 {
                     InfoCenterTip.Show("已取消：元素存在水平偏差且未纠偏");
@@ -143,10 +132,9 @@ namespace MEPTools.MEPConnector.Planar.Commands // 【修改】更新命名空�
             {
                 trans.Start();
 
-                // 【新增】执行前置对齐逻辑
                 if (doAlign)
                 {
-                    int alignCount = 0;
+                    int alignCount = 0, alignFail = 0;
                     foreach (var pair in pairsWithDeviation)
                     {
                         Element elA = doc.GetElement(pair.AId);
@@ -154,20 +142,23 @@ namespace MEPTools.MEPConnector.Planar.Commands // 【修改】更新命名空�
                         if (elA == null || elB == null) continue;
 
                         if (service.AlignPair(doc, elA, elB)) alignCount++;
+                        else
+                        {
+                            alignFail++;
+                            MEPLogger.Instance.AppendLine(
+                                $"⚠ 对齐失败: {pair.AId} → {pair.BId}（不平行或元素无效）");
+                        }
                     }
-                    
-                    // 必须刷新文档，让对齐操作生效并更新几何信息
-                    doc.Regenerate(); 
-                    MEPLogger.Instance.AppendLine($"已自动水平对齐 {alignCount} 对元素。\n");
+                    doc.Regenerate();
+                    MEPLogger.Instance.AppendLine(
+                        $"已自动水平对齐 {alignCount} 对元素（失败 {alignFail} 对）。\n");
                 }
 
-                // 执行合并
                 foreach (var pair in pairs)
                 {
                     Element elA = doc.GetElement(pair.AId);
                     Element elB = doc.GetElement(pair.BId);
 
-                    // 如果在之前的配对中，B 已经被吞噬删除了，这里会拿到 null，直接跳过
                     if (elA == null || elB == null)
                     {
                         MEPLogger.Instance.AppendLine($"✗ 跳过 {pair.AId} & {pair.BId}: 元素已在之前的合并中被删除");
@@ -190,11 +181,22 @@ namespace MEPTools.MEPConnector.Planar.Commands // 【修改】更新命名空�
 
             MEPLogger.Instance.EndSession($"成功 {success} 对，失败 {fail} 对");
 
-            // ---------- 6. 结果用 InfoCenter 显示 ----------
+            // ---------- 6. 结果展示 ----------
             string hint = (success == 0 && fail > 0)
                 ? "（若两管垂直交叉，请用【转角连接】命令）"
                 : "";
             InfoCenterTip.Show($"共线连接完成：成功 {success} 对，失败 {fail} 对{hint}");
+
+            // 【新增】失败详情用 TaskDialog 展开，让用户知道"为什么没合上"
+            if (fail > 0)
+            {
+                var td = new TaskDialog("MEP 共线连接结果");
+                td.MainInstruction = $"成功 {success} 对，失败 {fail} 对";
+                td.MainContent = "部分配对失败，日志详情见展开内容：";
+                td.ExpandedContent = MEPLogger.Instance.GetFullText();
+                td.CommonButtons = TaskDialogCommonButtons.Ok;
+                td.Show();
+            }
 
             return Result.Succeeded;
         }

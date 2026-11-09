@@ -33,6 +33,10 @@ namespace MEPTools.MEPConnector.Planar.Core
     {
         public const double FtToMm = 304.8;
 
+        // 【修复】统一平行度容差为 1e-2（约 0.57°），与 GetHorizontalDeviation 一致
+        // 原 1e-3（约 0.057°）过严，造成匹配/对齐/共线三处判定不一致
+        private const double ParallelTolCross = 1e-2;
+
         public static MEPElementType GetElementType(Element elem)
         {
             if (elem is Pipe) return MEPElementType.Pipe;
@@ -74,9 +78,9 @@ namespace MEPTools.MEPConnector.Planar.Core
             da = da.Normalize();
             db = db.Normalize();
 
-            // 【修复】放宽平行度判断
+            // 【修复】统一容差为 1e-2
             double cross = da.X * db.Y - da.Y * db.X;
-            if (Math.Abs(cross) > 1e-2) return double.MaxValue;
+            if (Math.Abs(cross) > ParallelTolCross) return double.MaxValue;
 
             XYZ sa = la.GetEndPoint(0);
             XYZ sb = lb.GetEndPoint(0);
@@ -95,7 +99,8 @@ namespace MEPTools.MEPConnector.Planar.Core
             XYZ a0 = la.GetEndPoint(0), a1 = la.GetEndPoint(1);
             XYZ b0 = lb.GetEndPoint(0), b1 = lb.GetEndPoint(1);
 
-            if (Math.Abs(a0.Z - b0.Z) > 1e-3)
+            // 【修复】两端都检查 Z，防止有倾角时漏检
+            if (Math.Abs(a0.Z - b0.Z) > 1e-3 || Math.Abs(a1.Z - b1.Z) > 1e-3)
             {
                 g.ErrorMessage = "两管标高不一致，无法平面共线合并";
                 return g;
@@ -106,9 +111,9 @@ namespace MEPTools.MEPConnector.Planar.Core
             if (da.GetLength() < 1e-9 || db.GetLength() < 1e-9) { g.ErrorMessage = "存在竖直段，无法平面连接"; return g; }
             da = da.Normalize(); db = db.Normalize();
 
-            // 【修复】放宽平行度判断
+            // 【修复】平行度容差 1e-3 → 1e-2，与 AlignPair / GetHorizontalDeviation 一致
             double cross = da.X * db.Y - da.Y * db.X;
-            if (Math.Abs(cross) > 1e-3) { g.ErrorMessage = "两管不平行，无法共线延长"; return g; }
+            if (Math.Abs(cross) > ParallelTolCross) { g.ErrorMessage = "两管不平行，无法共线延长"; return g; }
 
             XYZ aMid = (a0 + a1) * 0.5;
             XYZ bMid = (b0 + b1) * 0.5;
@@ -118,12 +123,30 @@ namespace MEPTools.MEPConnector.Planar.Core
 
             if (perpDist > tolFt) { g.ErrorMessage = $"两管平行但错开 {perpDist * FtToMm:F1}mm，超出容差"; return g; }
 
+            // 内侧端点（离对方中点最近）
             g.PA = (a0.DistanceTo(bMid) < a1.DistanceTo(bMid)) ? a0 : a1;
             g.PB = (b0.DistanceTo(aMid) < b1.DistanceTo(aMid)) ? b0 : b1;
             g.P = g.PA;
 
-            g.OuterPA = (g.PA.DistanceTo(a0) < 1e-4) ? a1 : a0;
-            g.OuterPB = (g.PB.DistanceTo(b0) < 1e-4) ? b1 : b0;
+            // 【修复】外远端用"与内侧端点的距离"直接比较，稳健、无需容差
+            // OuterPA = A 上距离 PA 更远的端点；OuterPB = B 上距离 PB 更远的端点
+            double dPA_a0 = g.PA.DistanceTo(a0);
+            double dPA_a1 = g.PA.DistanceTo(a1);
+            g.OuterPA = (dPA_a0 > dPA_a1) ? a0 : a1;
+
+            double dPB_b0 = g.PB.DistanceTo(b0);
+            double dPB_b1 = g.PB.DistanceTo(b1);
+            g.OuterPB = (dPB_b0 > dPB_b1) ? b0 : b1;
+
+            // 语义校验：合并后的曲线必须比原来任一管都长，否则说明组合方式异常
+            double mergedLen = g.OuterPA.DistanceTo(g.OuterPB);
+            double lenA = a0.DistanceTo(a1);
+            double lenB = b0.DistanceTo(b1);
+            if (mergedLen < Math.Max(lenA, lenB) - 1e-3)
+            {
+                g.ErrorMessage = "共线延长方向异常（合并后长度反而缩短），已放弃";
+                return g;
+            }
 
             g.IsValid = true;
             return g;
@@ -172,7 +195,6 @@ namespace MEPTools.MEPConnector.Planar.Core
                 Line refLine = GetAxisLine(aList[0]);
                 if (refLine == null) return pairs;
 
-                // 【核心修复】绝对统一排序基准！取第一根管的法向量投影
                 XYZ dir = new XYZ(refLine.Direction.X, refLine.Direction.Y, 0).Normalize();
                 XYZ normal = new XYZ(-dir.Y, dir.X, 0);
 
