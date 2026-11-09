@@ -58,7 +58,11 @@ namespace MEPTools
                 new ButtonConfig { Text = "高低翻弯", ToolTip = "高低差生成马鞍翻弯", CommandType = typeof(MEPTools.MEPHighLowSaddleBend.Command), PulldownGroup = "翻弯工具" },
                 new ButtonConfig { Text = "平面拐弯", ToolTip = "在水平面内两组MEP元素之间生成拐弯侧向翻弯", CommandType = typeof(MEPTools.MEPPlanarLateralBend.Command), PulldownGroup = "翻弯工具" },
                 new ButtonConfig { Text = "平面翻弯", ToolTip = "在平面内两组MEP元素之间生成马鞍翻弯，沿着管升降方向点两次，第一点为打断点，对第二点的MEP 元素的相对第一点的方向进行翻弯操作", CommandType = typeof(MEPTools.MEPPlanarSaddleBend.Command), PulldownGroup = "翻弯工具" },
-                new ButtonConfig { Text = "高低升降", ToolTip = "沿着管升降方向点两次，第一点为打断点，对第二点的MEP 元素进行抬升或下降操作", CommandType = typeof(MEPTools.MEPHighLowUpDown.Command), PulldownGroup = "翻弯工具" },
+
+                // 高低升降 —— 拆分为三个独立角度命令
+                new ButtonConfig { Text = "高低升降 45°", ToolTip = "沿管线方向点击两次（第1点=打断点，第2点=升降侧），以 45° 弯头生成抬升/下降（正数抬升，负数下降）", CommandType = typeof(MEPTools.MEPHighLowUpDown.Command45), PulldownGroup = "翻弯工具" },
+                new ButtonConfig { Text = "高低升降 90°", ToolTip = "沿管线方向点击两次（第1点=打断点，第2点=升降侧），以 90° 弯头生成纯垂直抬升/下降（正数抬升，负数下降）", CommandType = typeof(MEPTools.MEPHighLowUpDown.Command90), PulldownGroup = "翻弯工具" },
+                new ButtonConfig { Text = "高低升降 0~90°", ToolTip = "沿管线方向点击两次（第1点=打断点，第2点=升降侧），自定义 0~90° 角度生成抬升/下降（角度越小水平段越长）", CommandType = typeof(MEPTools.MEPHighLowUpDown.Command0To90), PulldownGroup = "翻弯工具" },
 
                 // ================= 4. 对齐与排序 (面板直接展示) =================
                 new ButtonConfig { Text = "底部平齐", ToolTip = "将选中的 MEP 元素底部标高对齐到指定的基准", CommandType = typeof(MEPTools.MEPAlignBottomElevation.Command) },

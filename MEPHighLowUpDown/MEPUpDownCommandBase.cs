@@ -20,11 +20,20 @@ namespace MEPTools.MEPHighLowUpDown
 {
     [Transaction(TransactionMode.Manual)]
     [Regeneration(RegenerationOption.Manual)]
-    public class Command : IExternalCommand
+    public abstract class MEPUpDownCommandBase : IExternalCommand
     {
         private readonly StringBuilder debugInfo = new StringBuilder();
 
-        private void Log(string text)
+        /// <summary>命令标题（用于日志、事务名、对话框标题）</summary>
+        protected abstract string Title { get; }
+
+        /// <summary>获取本次执行的角度（度）。返回 false 表示用户取消。</summary>
+        protected abstract bool TryGetAngleDeg(out double angleDeg);
+
+        /// <summary>偏移量输入框的默认值</summary>
+        protected virtual string DefaultOffsetInput => "200";
+
+        protected void Log(string text)
         {
             debugInfo.AppendLine(text);
             MEPLogger.Instance.AppendLine(text);
@@ -36,11 +45,20 @@ namespace MEPTools.MEPHighLowUpDown
             UIDocument uidoc = uiapp.ActiveUIDocument;
             Document doc = uidoc.Document;
 
-            MEPLogger.Instance.StartSession("MEP 45° Up/Down");
+            MEPLogger.Instance.StartSession(Title);
             int successCount = 0, failCount = 0;
 
             try
             {
+                // ── 第 0 步：确定角度 ──
+                if (!TryGetAngleDeg(out double angleDeg))
+                {
+                    MEPLogger.Instance.EndSession("用户取消角度输入");
+                    return Result.Cancelled;
+                }
+                Log($"连接角度 = {angleDeg:F2}°");
+
+                // ── 第 1 步：获取有效元素 ──
                 List<ElementId> elemIdList = GetValidMEPElementIds(doc, uidoc);
 
                 if (elemIdList.Count < 1)
@@ -54,10 +72,7 @@ namespace MEPTools.MEPHighLowUpDown
                             Forms.Keys.Space, "完成", "Finish", "Complete"))
                         {
                             try { finisher.Enable(); }
-                            catch (Exception ex)
-                            {
-                                Log($"[SpaceKeyFinisher] 启用失败（不影响选择）：{ex.Message}");
-                            }
+                            catch (Exception ex) { Log($"[SpaceKeyFinisher] 启用失败（不影响选择）：{ex.Message}"); }
 
                             IList<Reference> refs = uidoc.Selection.PickObjects(
                                 ObjectType.Element,
@@ -67,8 +82,7 @@ namespace MEPTools.MEPHighLowUpDown
                             foreach (Reference r in refs)
                             {
                                 Element e = doc.GetElement(r.ElementId);
-                                if (IsValidMEPElement(e))
-                                    elemIdList.Add(r.ElementId);
+                                if (IsValidMEPElement(e)) elemIdList.Add(r.ElementId);
                             }
                         }
                     }
@@ -92,8 +106,11 @@ namespace MEPTools.MEPHighLowUpDown
                     return Result.Failed;
                 }
 
-                double h_offset_mm = ShowInputDialog("45° 抬升/下降（Up/Down）",
-                    "正数=抬升(Up)，负数=下降(Down)\n单位：mm\n示例：200 / -150", "200");
+                // ── 第 2 步：高度偏移 ──
+                double h_offset_mm = ShowInputDialog(
+                    $"{Title}（偏移量）",
+                    "正数=抬升(Up)，负数=下降(Down)\n单位：mm\n示例：200 / -150",
+                    DefaultOffsetInput);
 
                 if (double.IsNaN(h_offset_mm)) return Result.Cancelled;
                 if (Math.Abs(h_offset_mm) < 1)
@@ -104,6 +121,7 @@ namespace MEPTools.MEPHighLowUpDown
 
                 double h_offset_ft = UnitUtils.ConvertToInternalUnits(h_offset_mm, UnitTypeId.Millimeters);
 
+                // ── 第 3 步：拾取打断点与升降侧（两点均在管上）──
                 InfoCenterTip.Show("第 1/2 步：请选择打断点（原高度侧）");
                 Reference ref1 = uidoc.Selection.PickObject(ObjectType.PointOnElement,
                     new MEPCurveSelectionFilter(),
@@ -111,16 +129,20 @@ namespace MEPTools.MEPHighLowUpDown
 
                 XYZ breakPt = ref1.GlobalPoint;
 
-                InfoCenterTip.Show("第 2/2 步：请点击需要抬升/下降的一侧（大概位置即可）");
-                XYZ sidePt = uidoc.Selection.PickPoint(
-                    "【第 2/2 步】在需要抬升/下降的一侧点击任意位置（无需点在管上）");
+                InfoCenterTip.Show("第 2/2 步：请在需要抬升/下降一侧的管上点击任意位置");
+                Reference ref2 = uidoc.Selection.PickObject(ObjectType.PointOnElement,
+                    new MEPCurveSelectionFilter(),
+                    "【第 2/2 步】在需要抬升/下降一侧的管上点击任意位置（可点任意一根已选管）");
+
+                XYZ sidePt = ref2.GlobalPoint;
 
                 Log($"打断点: {MEPUpDownCalculator.Fmt(breakPt)}");
                 Log($"升降侧参考点: {MEPUpDownCalculator.Fmt(sidePt)}");
 
+                // ── 第 4 步：批量处理 ──
                 MEPUpDownService service = new MEPUpDownService(debugInfo);
 
-                using (Transaction trans = new Transaction(doc, "45° Up/Down"))
+                using (Transaction trans = new Transaction(doc, Title))
                 {
                     trans.Start();
 
@@ -130,7 +152,7 @@ namespace MEPTools.MEPHighLowUpDown
                         try
                         {
                             bool ok = service.ProcessSingleElement(
-                                doc, eid, breakPt, sidePt, h_offset_ft);
+                                doc, eid, breakPt, sidePt, h_offset_ft, angleDeg);
                             if (ok) successCount++; else failCount++;
                         }
                         catch (Exception ex)
@@ -146,13 +168,11 @@ namespace MEPTools.MEPHighLowUpDown
                 }
 
                 if (failCount == 0)
-                {
                     InfoCenterTip.Show($"✓ 处理完成：成功 {successCount} 个元素");
-                }
                 else
                 {
                     InfoCenterTip.Show($"⚠ 处理完成：成功 {successCount}，失败 {failCount}");
-                    ShowDebugInfo("45° 抬升/下降 - 批量处理完成", $"成功 {successCount}，失败 {failCount}");
+                    ShowDebugInfo($"{Title} - 批量处理完成", $"成功 {successCount}，失败 {failCount}");
                 }
 
                 MEPLogger.Instance.EndSession($"成功 {successCount}，失败 {failCount}");
@@ -180,7 +200,6 @@ namespace MEPTools.MEPHighLowUpDown
             List<ElementId> result = new List<ElementId>();
             ICollection<ElementId> preSelected = uidoc.Selection.GetElementIds();
             if (preSelected == null) return result;
-
             foreach (ElementId id in preSelected)
             {
                 Element elem = doc.GetElement(id);
@@ -196,7 +215,8 @@ namespace MEPTools.MEPHighLowUpDown
             return t == MEPElementType.Pipe || t == MEPElementType.Duct || t == MEPElementType.CableTray;
         }
 
-        private double ShowInputDialog(string title, string tipText, string defaultValue)
+        /// <summary>供子类复用的输入对话框（回车/空格确认，ESC 取消）</summary>
+        protected double ShowInputDialog(string title, string tipText, string defaultValue)
         {
             InfoCenterTip.Show($"{title}：{tipText.Replace("\n", " | ")}");
 

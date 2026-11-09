@@ -15,6 +15,7 @@ namespace MEPTools.MEPHighLowUpDown
         public XYZ P1 { get; set; }
         public XYZ Dir { get; set; }
         public double Offset { get; set; }
+        public double AngleDeg { get; set; }
         public bool LiftRight { get; set; }
         public double DistFromStart { get; set; }
         public double DistToEnd { get; set; }
@@ -39,10 +40,16 @@ namespace MEPTools.MEPHighLowUpDown
         }
 
         public static UpDownGeometry ComputeLift(Curve curve, XYZ breakPt, XYZ sidePt,
-            double h_offset_ft, out string errorMsg)
+            double h_offset_ft, double angleDeg, out string errorMsg)
         {
             errorMsg = null;
             var result = new UpDownGeometry { IsValid = false };
+
+            if (angleDeg <= 0.0 || angleDeg > 90.0)
+            {
+                errorMsg = $"连接角度必须在 (0°, 90°] 之间（当前 {angleDeg:F2}°）";
+                return result;
+            }
 
             if (curve == null)
             {
@@ -50,7 +57,6 @@ namespace MEPTools.MEPHighLowUpDown
                 return result;
             }
 
-            // 仅投影打断点（因为打断点必须在管线上）
             IntersectionResult proj1 = curve.Project(breakPt);
             if (proj1 == null)
             {
@@ -60,7 +66,6 @@ namespace MEPTools.MEPHighLowUpDown
 
             XYZ p0 = proj1.XYZPoint;
 
-            // 计算曲线方向
             XYZ dir;
             if (curve is Line line)
             {
@@ -78,39 +83,41 @@ namespace MEPTools.MEPHighLowUpDown
                 dir = tangent.Normalize();
             }
 
-            // ★ 升降侧判定：直接用点击的空间点与打断点的相对位置，不再需要投影到曲线上
-            // 如果方向向量的点积 >= 0，说明点在沿管线的正方向上（右侧），反之左侧
             bool liftRight = (sidePt - p0).DotProduct(dir) >= 0;
-
             double absH = Math.Abs(h_offset_ft);
             double sign = liftRight ? 1.0 : -1.0;
 
             XYZ curveStart = curve.GetEndPoint(0);
             XYZ curveEnd = curve.GetEndPoint(1);
-
             double distFromStart = (p0 - curveStart).DotProduct(dir);
             double distToEnd = (curveEnd - p0).DotProduct(dir);
 
             double tolFt = UnitUtils.ConvertToInternalUnits(0.5, UnitTypeId.Millimeters);
             double availableSpace = liftRight ? distToEnd : distFromStart;
 
+            // 沿管线方向的水平偏移：|h| / tan(θ)
+            // 45° → |h|；90° → 0（纯垂直过渡）；小角度 → 水平很长
+            double rad = angleDeg * Math.PI / 180.0;
+            double horizOffset = angleDeg >= 89.999
+                ? 0.0
+                : absH / Math.Tan(rad);
+
             result.DistFromStart = distFromStart;
             result.DistToEnd = distToEnd;
             result.AvailableSpace = availableSpace;
 
-            if (availableSpace < absH - tolFt)
+            if (availableSpace < horizOffset - tolFt)
             {
                 errorMsg =
                     $"打断点距离升降侧端点空间不足：\n" +
-                    $"  需要 = {absH * FtToMm:F1} mm\n" +
-                    $"  可用 = {availableSpace * FtToMm:F1} mm\n" +
+                    $"  需要水平空间 = {horizOffset * FtToMm:F1} mm（角度 {angleDeg:F1}°）\n" +
+                    $"  可用空间 = {availableSpace * FtToMm:F1} mm\n" +
                     $"  (打断点距起点 {distFromStart * FtToMm:F1} mm, 距终点 {distToEnd * FtToMm:F1} mm)\n" +
-                    $"  建议：减小偏移量至 ≤ {availableSpace * FtToMm:F1} mm，或将打断点向升降侧端点方向移动";
+                    $"  建议：减小偏移量或增大角度（更陡），或将打断点向升降侧端点方向移动";
                 return result;
             }
 
-            // P1 = P0 + dir*sign*|h| + Z*h
-            XYZ p1 = p0 + dir * (sign * absH) + XYZ.BasisZ * h_offset_ft;
+            XYZ p1 = p0 + dir * (sign * horizOffset) + XYZ.BasisZ * h_offset_ft;
 
             double transLen = (p1 - p0).GetLength();
             if (transLen < MinTransitionLength)
@@ -123,6 +130,7 @@ namespace MEPTools.MEPHighLowUpDown
             result.P1 = p1;
             result.Dir = dir;
             result.Offset = h_offset_ft;
+            result.AngleDeg = angleDeg;
             result.LiftRight = liftRight;
             result.IsValid = true;
             return result;

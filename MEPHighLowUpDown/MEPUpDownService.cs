@@ -20,7 +20,7 @@ namespace MEPTools.MEPHighLowUpDown
         }
 
         public bool ProcessSingleElement(Document doc, ElementId elemId,
-            XYZ breakPt, XYZ sidePt, double h_offset_ft)
+            XYZ breakPt, XYZ sidePt, double h_offset_ft, double angleDeg)
         {
             Element elem = doc.GetElement(elemId);
             if (elem == null || !elem.IsValidObject)
@@ -32,7 +32,7 @@ namespace MEPTools.MEPHighLowUpDown
             MEPElementType elemType = MEPUpDownCalculator.GetElementType(elem);
             if (elemType == MEPElementType.Unknown)
             {
-                _log.AppendLine("✗ 元素类型不支持 45° 抬升/下降");
+                _log.AppendLine("✗ 元素类型不支持该操作");
                 return false;
             }
 
@@ -46,13 +46,14 @@ namespace MEPTools.MEPHighLowUpDown
 
             string geomErr;
             UpDownGeometry geom = MEPUpDownCalculator.ComputeLift(
-                curve, breakPt, sidePt, h_offset_ft, out geomErr);
+                curve, breakPt, sidePt, h_offset_ft, angleDeg, out geomErr);
             if (!geom.IsValid)
             {
                 _log.AppendLine($"✗ {geomErr}");
                 return false;
             }
 
+            _log.AppendLine($"连接角度: {angleDeg:F2}°");
             _log.AppendLine($"打断点 P0 = {MEPUpDownCalculator.Fmt(geom.P0)}");
             _log.AppendLine($"过渡终点 P1 = {MEPUpDownCalculator.Fmt(geom.P1)}");
             _log.AppendLine($"抬升方向: {(geom.LiftRight ? "沿管线方向" : "逆管线方向")}");
@@ -95,7 +96,6 @@ namespace MEPTools.MEPHighLowUpDown
                 if (ph != null) height = ph.AsDouble();
             }
 
-            // ==================== 核心修复：系统类型获取策略 ====================
             if (elemType != MEPElementType.CableTray && systemTypeId == ElementId.InvalidElementId)
             {
                 _log.AppendLine("  ℹ 管道无系统参数，尝试通过 MEPSystem 提取...");
@@ -104,13 +104,12 @@ namespace MEPTools.MEPHighLowUpDown
                     systemTypeId = mepCurve.MEPSystem.GetTypeId();
                 }
 
-                // 如果依然没有，尝试借用项目里的默认类型，保证 Create 不崩溃
                 if (systemTypeId == ElementId.InvalidElementId)
                 {
                     _log.AppendLine("  ℹ 尝试借用文档中同类默认系统...");
                     Type sysTypeClass = elemType == MEPElementType.Pipe ? typeof(PipingSystemType) : typeof(MechanicalSystemType);
                     var defaultSysType = new FilteredElementCollector(doc).OfClass(sysTypeClass).FirstOrDefault();
-                    
+
                     if (defaultSysType != null)
                     {
                         systemTypeId = defaultSysType.Id;
@@ -118,14 +117,12 @@ namespace MEPTools.MEPHighLowUpDown
                     }
                     else
                     {
-                        // 连库里都没有，说明项目模板极度缺失，强行接会导致 Revit 崩溃
                         _log.AppendLine("  ✗ 文档中找不到任何可用的系统类型，无法重建。");
                         InfoCenterTip.Show("✗ 项目中没有可用的管线系统，请先在“系统浏览器”中创建一个系统。");
                         return false;
                     }
                 }
             }
-            // =================================================================
 
             XYZ curveStart = curve.GetEndPoint(0);
             XYZ curveEnd = curve.GetEndPoint(1);
@@ -198,7 +195,7 @@ namespace MEPTools.MEPHighLowUpDown
                 }
             }
 
-            _log.AppendLine($"✓ 元素 {elemId.IntegerValue} 抬升/下降处理成功");
+            _log.AppendLine($"✓ 元素 {elemId.IntegerValue} 处理成功");
             return true;
         }
 
@@ -213,13 +210,9 @@ namespace MEPTools.MEPHighLowUpDown
 
             ElementId id1;
             if (elemType == MEPElementType.Pipe)
-            {
                 id1 = PlumbingUtils.BreakCurve(doc, elemId, geom.P0);
-            }
             else
-            {
                 id1 = MechanicalUtils.BreakCurve(doc, elemId, geom.P0);
-            }
 
             if (id1 == ElementId.InvalidElementId)
                 throw new InvalidOperationException($"BreakCurve 返回无效 ID (elemId={elemId.IntegerValue})");
@@ -265,7 +258,7 @@ namespace MEPTools.MEPHighLowUpDown
 
             Element ramp = CreateMEPCurve(doc, elemType, typeId, levelId, systemTypeId,
                 diameter, width, height, geom.P0, geom.P1);
-            if (ramp == null) throw new InvalidOperationException("斜段创建失败");
+            if (ramp == null) throw new InvalidOperationException("过渡段创建失败");
 
             Element newHoriz = null;
             if (!newHorizStart.IsAlmostEqualTo(newHorizEnd, 1e-6))
@@ -279,15 +272,15 @@ namespace MEPTools.MEPHighLowUpDown
 
             if (geom.LiftRight)
             {
-                TryCreateElbow(doc, keepSegId, ramp.Id, geom.P0, "弯头1（原段-斜段）");
+                TryCreateElbow(doc, keepSegId, ramp.Id, geom.P0, geom.AngleDeg, "弯头1（原段-过渡段）");
                 if (newHoriz != null)
-                    TryCreateElbow(doc, ramp.Id, newHoriz.Id, geom.P1, "弯头2（斜段-新高度段）");
+                    TryCreateElbow(doc, ramp.Id, newHoriz.Id, geom.P1, geom.AngleDeg, "弯头2（过渡段-新高度段）");
             }
             else
             {
                 if (newHoriz != null)
-                    TryCreateElbow(doc, newHoriz.Id, ramp.Id, geom.P1, "弯头1（新高度段-斜段）");
-                TryCreateElbow(doc, ramp.Id, keepSegId, geom.P0, "弯头2（斜段-原段）");
+                    TryCreateElbow(doc, newHoriz.Id, ramp.Id, geom.P1, geom.AngleDeg, "弯头1（新高度段-过渡段）");
+                TryCreateElbow(doc, ramp.Id, keepSegId, geom.P0, geom.AngleDeg, "弯头2（过渡段-原段）");
             }
 
             liftedEndElementId = newHoriz != null ? newHoriz.Id : ramp.Id;
@@ -296,9 +289,6 @@ namespace MEPTools.MEPHighLowUpDown
             return true;
         }
 
-        // =====================================================================
-        // 以下辅助方法直接使用你最初提供的版本（确保不改变任何底层处理逻辑）
-        // =====================================================================
         private Element CreateMEPCurve(Document doc, MEPElementType t,
             ElementId typeId, ElementId levelId, ElementId systemTypeId,
             double dia, double w, double h, XYZ s, XYZ e)
@@ -445,7 +435,7 @@ namespace MEPTools.MEPHighLowUpDown
             for (int i = 0; i < segs.Count - 1; i++)
             {
                 XYZ joint = FindCommonEndPoint(segs[i], segs[i + 1]);
-                if (joint != null) TryCreateElbow(doc, segs[i].Id, segs[i + 1].Id, joint, $"CT弯头{i + 1}");
+                if (joint != null) TryCreateElbow(doc, segs[i].Id, segs[i + 1].Id, joint, geom.AngleDeg, $"CT弯头{i + 1}");
             }
 
             if (segs.Count > 0)
@@ -480,7 +470,7 @@ namespace MEPTools.MEPHighLowUpDown
             return null;
         }
 
-        private bool TryCreateElbow(Document doc, ElementId idA, ElementId idB, XYZ atPt, string tag)
+        private bool TryCreateElbow(Document doc, ElementId idA, ElementId idB, XYZ atPt, double angleDeg, string tag)
         {
             Element elA = doc.GetElement(idA);
             Element elB = doc.GetElement(idB);
@@ -513,10 +503,12 @@ namespace MEPTools.MEPHighLowUpDown
             {
                 FamilyInstance fit = doc.Create.NewElbowFitting(ca, cb);
                 if (fit == null) return false;
-                Parameter angleParam = fit.LookupParameter("Angle") ?? fit.LookupParameter("角度") ?? fit.LookupParameter("Bend Angle") ?? fit.LookupParameter("弯头角度");
+                Parameter angleParam = fit.LookupParameter("Angle") ?? fit.LookupParameter("角度")
+                    ?? fit.LookupParameter("Bend Angle") ?? fit.LookupParameter("弯头角度");
                 if (angleParam != null && !angleParam.IsReadOnly && angleParam.StorageType == StorageType.Double)
                 {
-                    try { angleParam.Set(45.0); } catch { angleParam.Set(45.0 * Math.PI / 180.0); }
+                    try { angleParam.Set(angleDeg); }
+                    catch { angleParam.Set(angleDeg * Math.PI / 180.0); }
                 }
                 return true;
             }
@@ -599,7 +591,7 @@ namespace MEPTools.MEPHighLowUpDown
             }
 
             double tol = Math.Max(
-                UnitUtils.ConvertToInternalUnits(1.5, UnitTypeId.Millimeters), 
+                UnitUtils.ConvertToInternalUnits(1.5, UnitTypeId.Millimeters),
                 Math.Min(UnitUtils.ConvertToInternalUnits(20.0, UnitTypeId.Millimeters), size * 0.1));
 
             Connector best = null;
