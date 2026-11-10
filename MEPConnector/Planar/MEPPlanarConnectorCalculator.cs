@@ -33,9 +33,12 @@ namespace MEPTools.MEPConnector.Planar.Core
     {
         public const double FtToMm = 304.8;
 
-        // 【修复】统一平行度容差为 1e-2（约 0.57°），与 GetHorizontalDeviation 一致
-        // 原 1e-3（约 0.057°）过严，造成匹配/对齐/共线三处判定不一致
+        // 平行度容差（共线判定与水平偏差判定共用）
         private const double ParallelTolCross = 1e-2;
+
+        // 【新增】平面投影退化阈值：XY 投影 / 总线长 < 该值视为“平面退化”
+        // 0.2 约对应 78.5° 以上倾斜；立管必然满足，普通坡度管不会误判
+        private const double PlanarDegenerateRatio = 0.2;
 
         public static MEPElementType GetElementType(Element elem)
         {
@@ -78,7 +81,6 @@ namespace MEPTools.MEPConnector.Planar.Core
             da = da.Normalize();
             db = db.Normalize();
 
-            // 【修复】统一容差为 1e-2
             double cross = da.X * db.Y - da.Y * db.X;
             if (Math.Abs(cross) > ParallelTolCross) return double.MaxValue;
 
@@ -99,7 +101,6 @@ namespace MEPTools.MEPConnector.Planar.Core
             XYZ a0 = la.GetEndPoint(0), a1 = la.GetEndPoint(1);
             XYZ b0 = lb.GetEndPoint(0), b1 = lb.GetEndPoint(1);
 
-            // 【修复】两端都检查 Z，防止有倾角时漏检
             if (Math.Abs(a0.Z - b0.Z) > 1e-3 || Math.Abs(a1.Z - b1.Z) > 1e-3)
             {
                 g.ErrorMessage = "两管标高不一致，无法平面共线合并";
@@ -111,7 +112,6 @@ namespace MEPTools.MEPConnector.Planar.Core
             if (da.GetLength() < 1e-9 || db.GetLength() < 1e-9) { g.ErrorMessage = "存在竖直段，无法平面连接"; return g; }
             da = da.Normalize(); db = db.Normalize();
 
-            // 【修复】平行度容差 1e-3 → 1e-2，与 AlignPair / GetHorizontalDeviation 一致
             double cross = da.X * db.Y - da.Y * db.X;
             if (Math.Abs(cross) > ParallelTolCross) { g.ErrorMessage = "两管不平行，无法共线延长"; return g; }
 
@@ -123,13 +123,10 @@ namespace MEPTools.MEPConnector.Planar.Core
 
             if (perpDist > tolFt) { g.ErrorMessage = $"两管平行但错开 {perpDist * FtToMm:F1}mm，超出容差"; return g; }
 
-            // 内侧端点（离对方中点最近）
             g.PA = (a0.DistanceTo(bMid) < a1.DistanceTo(bMid)) ? a0 : a1;
             g.PB = (b0.DistanceTo(aMid) < b1.DistanceTo(aMid)) ? b0 : b1;
             g.P = g.PA;
 
-            // 【修复】外远端用"与内侧端点的距离"直接比较，稳健、无需容差
-            // OuterPA = A 上距离 PA 更远的端点；OuterPB = B 上距离 PB 更远的端点
             double dPA_a0 = g.PA.DistanceTo(a0);
             double dPA_a1 = g.PA.DistanceTo(a1);
             g.OuterPA = (dPA_a0 > dPA_a1) ? a0 : a1;
@@ -138,7 +135,6 @@ namespace MEPTools.MEPConnector.Planar.Core
             double dPB_b1 = g.PB.DistanceTo(b1);
             g.OuterPB = (dPB_b0 > dPB_b1) ? b0 : b1;
 
-            // 语义校验：合并后的曲线必须比原来任一管都长，否则说明组合方式异常
             double mergedLen = g.OuterPA.DistanceTo(g.OuterPB);
             double lenA = a0.DistanceTo(a1);
             double lenB = b0.DistanceTo(b1);
@@ -152,6 +148,10 @@ namespace MEPTools.MEPConnector.Planar.Core
             return g;
         }
 
+        /// <summary>
+        /// 平面转角（原有逻辑，本方案未修改任何一行）。
+        /// 仅在两端都非立管时被 ComputeCornerAuto 调用。
+        /// </summary>
         public static PlanarConnectGeometry ComputeCorner(Element a, Element b)
         {
             var g = new PlanarConnectGeometry { IsValid = false, IsCollinear = false };
@@ -183,6 +183,105 @@ namespace MEPTools.MEPConnector.Planar.Core
 
             g.IsValid = true;
             return g;
+        }
+
+        // ============================================================
+        // 【新增】以下 4 个方法为“空间转角”路径，与原平面路径完全隔离
+        // ============================================================
+
+        /// <summary>
+        /// 判断单条线在平面投影中是否退化（近似立管）。
+        /// 采用 XY 投影长度占比，直接对应“平面视图里是否可见”。
+        /// null 线交给原有平面逻辑报错，不在此处判退化。
+        /// </summary>
+        private static bool IsPlanarDegenerate(Line l)
+        {
+            if (l == null) return false;
+            XYZ d = l.Direction;
+            double total = d.GetLength();
+            if (total < 1e-9) return false;
+            double xy = Math.Sqrt(d.X * d.X + d.Y * d.Y);
+            return (xy / total) < PlanarDegenerateRatio;
+        }
+
+        /// <summary>
+        /// 任一端平面投影退化（近似立管），则需要空间转角。
+        /// 水平管 × 水平管 → false（走原平面路径，行为不变）。
+        /// </summary>
+        private static bool NeedSpatialCorner(Element a, Element b)
+        {
+            return IsPlanarDegenerate(GetAxisLine(a)) || IsPlanarDegenerate(GetAxisLine(b));
+        }
+
+        /// <summary>
+        /// 空间转角：取两条空间直线最近点对的中点作为转角位置。
+        /// 适用于立管 + 水平管；两根立管会因平行被拒绝。
+        /// 与 ComputeCorner 的 XY 投影逻辑完全独立，互不影响。
+        /// </summary>
+        public static PlanarConnectGeometry ComputeCorner3D(Element a, Element b)
+        {
+            var g = new PlanarConnectGeometry { IsValid = false, IsCollinear = false };
+
+            Line la = GetAxisLine(a);
+            Line lb = GetAxisLine(b);
+            if (la == null || lb == null) { g.ErrorMessage = "存在非直线段元素"; return g; }
+
+            XYZ a0 = la.GetEndPoint(0), a1 = la.GetEndPoint(1);
+            XYZ b0 = lb.GetEndPoint(0), b1 = lb.GetEndPoint(1);
+
+            XYZ da = a1 - a0;
+            XYZ db = b1 - b0;
+            if (da.GetLength() < 1e-9 || db.GetLength() < 1e-9) { g.ErrorMessage = "存在零长度段"; return g; }
+            da = da.Normalize();
+            db = db.Normalize();
+
+            // 三维平行判定：1 - |cosθ| < 1e-4 约对应 0.81° 以内，视为平行
+            // 两根立管必然平行 → 直接拒绝；立管 × 水平管 dot≈0 → 不平行
+            double dot = da.DotProduct(db);
+            if (1.0 - Math.Abs(dot) < 1e-4) { g.ErrorMessage = "两管平行，无法转角连接"; return g; }
+
+            // 两条空间直线的最近点对：P1 = a0 + da*t，P2 = b0 + db*s
+            XYZ w0 = a0 - b0;
+            double aa = 1.0;
+            double bb = da.DotProduct(db);
+            double cc = 1.0;
+            double dd = da.DotProduct(w0);
+            double ee = db.DotProduct(w0);
+            double denom = aa * cc - bb * bb;
+            if (Math.Abs(denom) < 1e-9) { g.ErrorMessage = "交点计算奇异"; return g; }
+
+            double t = (bb * ee - cc * dd) / denom;
+            double s = (aa * ee - bb * dd) / denom;
+
+            XYZ q1 = a0 + da * t;
+            XYZ q2 = b0 + db * s;
+            double gap = q1.DistanceTo(q2);
+
+            // 异面容差与共线错开容差保持一致：50mm
+            double tol = UnitUtils.ConvertToInternalUnits(50.0, UnitTypeId.Millimeters);
+            if (gap > tol)
+            {
+                g.ErrorMessage = $"两管空间错开 {gap * FtToMm:F1}mm，超出容差";
+                return g;
+            }
+
+            g.P = (q1 + q2) * 0.5;
+
+            g.PA = (a0.DistanceTo(g.P) < a1.DistanceTo(g.P)) ? a0 : a1;
+            g.PB = (b0.DistanceTo(g.P) < b1.DistanceTo(g.P)) ? b0 : b1;
+
+            g.IsValid = true;
+            return g;
+        }
+
+        /// <summary>
+        /// 转角计算统一入口：
+        /// - 任一端为近似立管 → ComputeCorner3D（空间路径）
+        /// - 否则             → ComputeCorner（原平面路径，恒等映射）
+        /// </summary>
+        public static PlanarConnectGeometry ComputeCornerAuto(Element a, Element b)
+        {
+            return NeedSpatialCorner(a, b) ? ComputeCorner3D(a, b) : ComputeCorner(a, b);
         }
 
         public static List<ConnectorPair> MatchPairs(List<Element> aList, List<Element> bList, bool isCorner)
@@ -235,7 +334,8 @@ namespace MEPTools.MEPConnector.Planar.Core
                             if (GetSystemTypeId(a, typeA) != GetSystemTypeId(b, typeB)) continue;
                         }
 
-                        var g = ComputeCorner(a, b);
+                        // 【修改】原为 ComputeCorner，改为自动分流入口
+                        var g = ComputeCornerAuto(a, b);
                         if (g.IsValid)
                         {
                             double cost = g.PA.DistanceTo(g.P) + g.PB.DistanceTo(g.P);

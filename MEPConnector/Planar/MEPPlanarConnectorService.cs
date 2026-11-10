@@ -30,7 +30,6 @@ namespace MEPTools.MEPConnector.Planar.Core
             var g = PlanarConnectorCalculator.ComputeCollinear(a, b);
             if (!g.IsValid) { _log.AppendLine("✗ [共线] 计算失败: " + g.ErrorMessage); return false; }
 
-            // 校验 A 内侧端（PA）是否连接了 A/B 以外的元素
             if (!IsInnerEndFree(a, b, g.PA, out string innerDetail))
             {
                 _log.AppendLine($"✗ [共线] A({a.Id}) 内侧端已连接外部元素，合并后会断开；已跳过");
@@ -85,7 +84,6 @@ namespace MEPTools.MEPConnector.Planar.Core
                 var lineA = lcA?.Curve as Line;
                 if (lineA == null) return false;
 
-                // 1. 备份 A 外侧端连接件
                 Connector aOuterConn = GetExactConnector(a, g.OuterPA);
                 List<Connector> aOuterRefs = new List<Connector>();
                 if (aOuterConn != null && aOuterConn.IsConnected)
@@ -94,7 +92,6 @@ namespace MEPTools.MEPConnector.Planar.Core
                         if (c.Owner.Id != a.Id) aOuterRefs.Add(c);
                 }
 
-                // 2. 备份 B 外侧端连接件
                 Connector bOuterConn = GetExactConnector(b, g.OuterPB);
                 List<Connector> bOuterRefs = new List<Connector>();
                 if (bOuterConn != null && bOuterConn.IsConnected)
@@ -103,32 +100,26 @@ namespace MEPTools.MEPConnector.Planar.Core
                         if (c.Owner.Id != b.Id) bOuterRefs.Add(c);
                 }
 
-                // 3. 断开 A 和 B 的所有连接（核心修复：避免修改曲线时触发 Revit 拓扑警告）
                 DisconnectAll(a);
                 DisconnectAll(b);
 
-                // 4. 删除 B
                 doc.Delete(b.Id);
                 doc.Regenerate();
 
-                // 5. 获取新的 A 管坐标，并防止起点/终点反转导致的错误
                 XYZ a0 = lineA.GetEndPoint(0);
                 XYZ a1 = lineA.GetEndPoint(1);
-                
-                // 判断原来的起点(0)是不是内侧点(g.PA)
+
                 bool paIs0 = g.PA.DistanceTo(a0) < g.PA.DistanceTo(a1);
-                
+
                 XYZ newStart, newEnd;
                 if (paIs0)
                 {
-                    // 如果原点是内侧，为了让新线不反转，我们用原来的外侧点(a1)作为起点
-                    newStart = a1; // OuterPA
+                    newStart = a1;
                     newEnd = g.OuterPB;
                 }
                 else
                 {
-                    // 如果原点已经是外侧，起点保持不变
-                    newStart = a0; // OuterPA
+                    newStart = a0;
                     newEnd = g.OuterPB;
                 }
 
@@ -143,7 +134,6 @@ namespace MEPTools.MEPConnector.Planar.Core
                 lcA.Curve = newLine;
                 doc.Regenerate();
 
-                // 6. 恢复 A 的外侧连接
                 if (aOuterRefs.Count > 0)
                 {
                     Connector aNewOuter = GetExactConnector(a, g.OuterPA);
@@ -162,7 +152,6 @@ namespace MEPTools.MEPConnector.Planar.Core
                     }
                 }
 
-                // 7. 恢复 B 的外侧连接（接到 A 的新远端）
                 if (bOuterRefs.Count > 0)
                 {
                     Connector aFarConn = GetExactConnector(a, g.OuterPB);
@@ -203,7 +192,6 @@ namespace MEPTools.MEPConnector.Planar.Core
             {
                 if (c.IsConnected)
                 {
-                    // 拷贝一份 AllRefs，防止遍历时修改集合
                     var refs = new List<Connector>();
                     foreach (Connector r in c.AllRefs) refs.Add(r);
 
@@ -243,11 +231,17 @@ namespace MEPTools.MEPConnector.Planar.Core
             }
         }
 
+        /// <summary>
+        /// 转角连接：计算入口改为 ComputeCornerAuto，
+        /// 平面场景等价于原 ComputeCorner（自动分流保证），立管场景走三维最近点对。
+        /// 其余移动端点 / 查找连接器 / 创建弯头的逻辑完全不变。
+        /// </summary>
         public bool ProcessCorner(Document doc, Element a, Element b)
         {
             if (a == null || b == null || !a.IsValidObject || !b.IsValidObject) return false;
 
-            var g = PlanarConnectorCalculator.ComputeCorner(a, b);
+            // 【修改】原为 ComputeCorner，改为自动分流入口
+            var g = PlanarConnectorCalculator.ComputeCornerAuto(a, b);
             if (!g.IsValid) { _log.AppendLine("✗ [转角] 计算失败: " + g.ErrorMessage); return false; }
 
             if (g.PA.DistanceTo(g.P) > 1e-4) MoveEndpointTo(doc, a, g.PA, g.P);
@@ -307,13 +301,11 @@ namespace MEPTools.MEPConnector.Planar.Core
             var cm = GetConnectorManager(elem);
             if (cm == null) return null;
 
-            // 1) 精确匹配
             foreach (Connector c in cm.Connectors)
             {
                 if (c.Origin.DistanceTo(pt) < 1e-4) return c;
             }
 
-            // 2) 最近兜底
             Connector best = null;
             double bestD = double.MaxValue;
             foreach (Connector c in cm.Connectors)
