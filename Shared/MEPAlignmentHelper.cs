@@ -3,12 +3,16 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Plumbing;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Electrical;
+using MEPTools.Shared; // 必须引入以使用 MEPConfig
 
 namespace MEPTools.MEPConnector.Shared
 {
     public static class MEPAlignmentHelper
     {
-        public const double FtToMm = 304.8;
+        public const double FtToMm = 304.8; // 物理常量，保留
+
+        private static readonly double HorizontalEps = MEPConfig.GetDouble("MEPAlignment.HorizontalEps", 1e-6);
+        private static readonly double AlignEps = MEPConfig.GetDouble("MEPAlignment.AlignEps", 1e-4);
 
         /// <summary>
         /// 获取管线的水平方向（归一化）
@@ -19,7 +23,7 @@ namespace MEPTools.MEPConnector.Shared
             if (loc == null || !(loc.Curve is Line line)) return null;
 
             XYZ dir = new XYZ(line.Direction.X, line.Direction.Y, 0);
-            if (dir.GetLength() < 1e-6) return null;
+            if (dir.GetLength() < HorizontalEps) return null;
             return dir.Normalize();
         }
 
@@ -32,7 +36,6 @@ namespace MEPTools.MEPConnector.Shared
             XYZ dirB = GetHorizontalDirection(b);
             if (dirA == null || dirB == null) return double.MaxValue;
 
-            // 叉乘模长即为 sin(夹角)，平行时为 0
             return Math.Abs(dirA.X * dirB.Y - dirA.Y * dirB.X);
         }
 
@@ -80,7 +83,7 @@ namespace MEPTools.MEPConnector.Shared
                 XYZ vecAtoB = new XYZ(mb.X - a0.X, mb.Y - a0.Y, 0);
                 double dist = vecAtoB.DotProduct(normalA);
 
-                if (Math.Abs(dist) < 1e-4) return true; // 已共线
+                if (Math.Abs(dist) < AlignEps) return true; // 已共线
 
                 XYZ moveVec = -normalA * dist;
                 XYZ newB0 = new XYZ(b0.X + moveVec.X, b0.Y + moveVec.Y, b0.Z);

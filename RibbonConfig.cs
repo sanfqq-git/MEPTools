@@ -48,6 +48,10 @@ namespace MEPTools
                 new ButtonConfig { Id = "Btn_TagAlignLeft",              Text = "标记左对齐并堆叠",     ToolTip = "将选中的标记统一左对齐，并按当前上下顺序调整间距堆叠", CommandType = typeof(MEPTools.MEPTagAlignLeft.Command) },
                 new ButtonConfig { Id = "Btn_TagAlignLeftOnly",          Text = "标记仅左对齐",         ToolTip = "仅将选中的标记左侧对齐，不改变其垂直位置", CommandType = typeof(MEPTools.MEPTagAlignLeft.CommandAlignLeftOnly) },
                 new ButtonConfig { Id = "Btn_TagStackOnly",              Text = "标记仅堆叠",           ToolTip = "保持选中的标记现有相对顺序，统一调整上下堆叠间距", CommandType = typeof(MEPTools.MEPTagAlignLeft.CommandStackOnly) },
+                
+                // 👇 此处为新增的设置按钮 👇
+                new ButtonConfig { Id = "Btn_TagAlignSettings",          Text = "标记对齐设置",         ToolTip = "设置标记左对齐和堆叠的行距（毫米）", CommandType = typeof(MEPTools.MEPTagAlignLeft.CommandSetting) },
+                
                 new ButtonConfig { Id = "Btn_TagLeaderStyle60",          Text = "MEPTag60°",            ToolTip = "将选中的标记修改引线为60度折线", CommandType = typeof(MEPTools.TagLeaderStyle60.Command) },
 
                 // ================= 5. 其他辅助工具 =================

@@ -31,11 +31,17 @@ namespace MEPTools.Shared
                 {
                     CloseWriter();
                     _sb.Clear();
+                    
+                    string baseFolder = MEPConfig.GetString("Logger.BaseFolder", "MEPTools");
+                    string subFolder  = MEPConfig.GetString("Logger.LogsSubFolder", "Logs");
+                    string prefix     = MEPConfig.GetString("Logger.FilePrefix", "mep_");
+
                     string dir = Path.Combine(
                         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                        "MEPTools", "Logs");
+                        baseFolder, subFolder);
                     Directory.CreateDirectory(dir);
-                    string name = "mep_" + DateTime.Now.ToString("yyyyMMdd_HHmmss_fff") + ".log";
+                    
+                    string name = prefix + DateTime.Now.ToString("yyyyMMdd_HHmmss_fff") + ".log";
                     _logFilePath = Path.Combine(dir, name);
                     _writer = new StreamWriter(_logFilePath, false, new UTF8Encoding(false)) { AutoFlush = true };
                     AppendLine("==================================================");

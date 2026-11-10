@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
+using MEPTools.Shared; // 必须引入以使用 MEPConfig
 
 namespace MEPTools.MEPTagAlignLeft
 {
@@ -11,7 +12,8 @@ namespace MEPTools.MEPTagAlignLeft
     /// </summary>
     public static class CalculateIndependentTag
     {
-        private const double Eps = 1e-9;
+        // 改为从配置中读取
+        private static readonly double Eps = MEPConfig.GetDouble("TagAlign.Epsilon", 1e-9);
 
         private class TagInfo
         {
@@ -19,9 +21,6 @@ namespace MEPTools.MEPTagAlignLeft
             public XYZ HeadPos;   // Tag 头插入点（TagHeadPosition），用于定位和排序
         }
 
-        /// <summary>
-        /// 统一的初始化逻辑：提取 Tag 信息并获取视图的右/上方向。
-        /// </summary>
         private static List<TagInfo> PrepareTagInfos(
             View view, IList<IndependentTag> tags, out XYZ rightDir, out XYZ upDir)
         {
@@ -47,9 +46,6 @@ namespace MEPTools.MEPTagAlignLeft
             }).ToList();
         }
 
-        /// <summary>
-        /// 【图标 A】仅左对齐：将所有 Tag 的 HeadPos 对齐到最左侧，不改变垂直位置。
-        /// </summary>
         public static Dictionary<ElementId, XYZ> CalculateLeftAlignMoves(
             View view, IList<IndependentTag> tags)
         {
@@ -73,9 +69,6 @@ namespace MEPTools.MEPTagAlignLeft
             return moves;
         }
 
-        /// <summary>
-        /// 【图标 B】仅等距排序：保持 Tag 现有的垂直相对顺序，将其按 rowSpacing 统一排列。
-        /// </summary>
         public static Dictionary<ElementId, XYZ> CalculateStackMoves(
             View view, IList<IndependentTag> tags, double rowSpacing)
         {
@@ -83,7 +76,6 @@ namespace MEPTools.MEPTagAlignLeft
             var infos = PrepareTagInfos(view, tags, out _, out XYZ upDir);
             if (infos == null) return moves;
 
-            // 按当前 HeadPos 的 upDir 投影从上到下排序
             infos.Sort((a, b) =>
                 b.HeadPos.DotProduct(upDir).CompareTo(a.HeadPos.DotProduct(upDir)));
 
@@ -103,9 +95,6 @@ namespace MEPTools.MEPTagAlignLeft
             return moves;
         }
 
-        /// <summary>
-        /// 【图标 C】左对齐 + 等距排序（主功能）：按现有垂直顺序从上往下垂直堆叠，并左对齐。
-        /// </summary>
         public static Dictionary<ElementId, XYZ> CalculateStackedLeftMoves(
             View view, IList<IndependentTag> tags, double rowSpacing)
         {
@@ -113,7 +102,6 @@ namespace MEPTools.MEPTagAlignLeft
             var infos = PrepareTagInfos(view, tags, out XYZ rightDir, out XYZ upDir);
             if (infos == null) return moves;
 
-            // 按当前 HeadPos 的 upDir 投影从上到下排序
             infos.Sort((a, b) =>
                 b.HeadPos.DotProduct(upDir).CompareTo(a.HeadPos.DotProduct(upDir)));
 

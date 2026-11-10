@@ -28,16 +28,14 @@ namespace MEPTools.Shared
             [DllImport("user32.dll", EntryPoint = "SendMessage")]
             public static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
-            // ================= 新增 HotKey API =================
             [DllImport("user32.dll", SetLastError = true)]
             public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
 
             [DllImport("user32.dll", SetLastError = true)]
             public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
-            // ====================================================
 
             public const uint BM_CLICK = 0x00F5;
-            public const int WM_HOTKEY = 0x0312; // 热键消息标识
+            public const int WM_HOTKEY = 0x0312;
         }
 
         private readonly Keys _targetKey;
@@ -54,9 +52,8 @@ namespace MEPTools.Shared
             _targetKey = targetKey;
             _targetButtonTexts = buttonTexts?.Length > 0
                 ? buttonTexts
-                : new[] { "完成", "Finish", "Complete" };
+                : MEPConfig.GetStringArray("SpaceKey.ButtonTexts", ';', new[] { "完成", "Finish", "Complete" });
             
-            // 为当前实例生成一个唯一的热键 ID，避免与其他插件冲突
             _hotKeyId = this.GetHashCode();
         }
 
@@ -65,7 +62,6 @@ namespace MEPTools.Shared
             if (_disposed) throw new ObjectDisposedException(nameof(SpaceKeyFinisher));
             if (_isRegistered) return;
 
-            // 1. 获取 Revit 的主窗口句柄
             _revitWindowHandle = Autodesk.Windows.ComponentManager.ApplicationWindow;
             if (_revitWindowHandle == IntPtr.Zero) 
             {
@@ -73,8 +69,6 @@ namespace MEPTools.Shared
                 return;
             }
 
-            // 2. 注册系统热键
-            // fsModifiers = 0 表示无修饰键 (Ctrl/Alt/Shift)
             bool registered = NativeMethods.RegisterHotKey(
                 _revitWindowHandle, 
                 _hotKeyId, 
@@ -88,12 +82,11 @@ namespace MEPTools.Shared
             }
             _isRegistered = true;
 
-            // 3. 挂接窗口消息处理，用于接收 WM_HOTKEY
             var source = HwndSource.FromHwnd(_revitWindowHandle);
             if (source == null)
             {
                 MEPLogger.Instance.AppendLine("[SpaceKeyFinisher] 无法获取 HwndSource。");
-                Disable(); // 回滚注册
+                Disable();
                 return;
             }
             _hwndSource = source;
@@ -105,14 +98,12 @@ namespace MEPTools.Shared
             if (_disposed) return;
             _disposed = true;
 
-            // 1. 移除窗口消息拦截
             if (_hwndSource != null)
             {
                 _hwndSource.RemoveHook(WndProc);
                 _hwndSource = null;
             }
 
-            // 2. 注销系统热键
             if (_isRegistered && _revitWindowHandle != IntPtr.Zero)
             {
                 NativeMethods.UnregisterHotKey(_revitWindowHandle, _hotKeyId);
@@ -124,14 +115,10 @@ namespace MEPTools.Shared
 
         public void Dispose() => Disable();
 
-        /// <summary>
-        /// 拦截窗口消息，处理热键触发
-        /// </summary>
         private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
             if (msg == NativeMethods.WM_HOTKEY)
             {
-                // wParam 包含了触发的热键 ID
                 if (wParam.ToInt32() == _hotKeyId)
                 {
                     OnHotKeyPressed();
@@ -175,7 +162,7 @@ namespace MEPTools.Shared
                     if (buttonText.Equals(candidate, StringComparison.Ordinal))
                     {
                         targetButton = hwnd;
-                        return false;   // 停止枚举
+                        return false;
                     }
                 }
                 return true;

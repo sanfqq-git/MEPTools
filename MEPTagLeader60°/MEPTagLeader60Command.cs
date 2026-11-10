@@ -25,51 +25,37 @@ namespace MEPTools.TagLeaderStyle60
                               ElementSet elements)
         {
             var logger = MEPLogger.Instance;
-            logger.StartSession("MEPTagLeader60 - 引线折角 60°（修复版）");
+            logger.StartSession("MEPTagLeader60 - 引线折角 60°（绝对安全防乱飞版）");
 
             try
             {
                 UIDocument uidoc = commandData?.Application?.ActiveUIDocument;
-                if (uidoc == null)
-                {
-                    InfoCenterTip.Show("无活动文档");
-                    return Result.Cancelled;
-                }
+                if (uidoc == null) { InfoCenterTip.Show("无活动文档"); return Result.Cancelled; }
 
                 Document doc = uidoc.Document;
                 View activeView = doc.ActiveView;
-                if (activeView == null)
-                {
-                    InfoCenterTip.Show("无活动视图");
-                    return Result.Cancelled;
-                }
+                if (activeView == null) { InfoCenterTip.Show("无活动视图"); return Result.Cancelled; }
 
-                // =========================================================
-                // 1. 预选获取 & 2. 无预选交互选择 (使用共享类 + 空格键结束)
-                // =========================================================
+                // 1. 预选获取 & 2. 无预选交互选择
                 List<IndependentTag> tags = Preselected.GetSelectedIndependentTags(uidoc, activeView);
 
                 if (tags.Count == 0)
                 {
                     InfoCenterTip.Show("请选择要调整的标记（Tag），按空格键完成选择");
                     var filter = new MEPTagSelectionFilter();
-                    
                     List<Element> picked = MEPSelectionHelper.GetElements(
                         uidoc, filter, "请选择要调整的 MEP 标记",
                         "请在视图中选择标记，按空格键结束",
                         minCount: 1, useSpaceKey: true, singlePick: false);
-
                     tags = picked.OfType<IndependentTag>().ToList();
                 }
 
                 if (tags.Count == 0)
                 {
-                    logger.EndSession("已取消：未选中有效 MEP 标记");
                     InfoCenterTip.Show("未选择任何标记，操作取消");
                     return Result.Cancelled;
                 }
 
-                // 视图坐标系
                 XYZ rightDir = activeView.RightDirection.Normalize();
                 XYZ upDir    = activeView.UpDirection.Normalize();
                 XYZ viewDir  = activeView.ViewDirection.Normalize();
@@ -80,7 +66,7 @@ namespace MEPTools.TagLeaderStyle60
                 int modifiedCount   = 0;
                 int skippedCount    = 0;
                 int noChangeCount   = 0;
-                int degenerateCount = 0; // 记录退化为直线的数量
+                int degenerateCount = 0;
 
                 using (Transaction trans = new Transaction(doc, $"调整标记引线为 {TargetAngleDeg}°"))
                 {
@@ -88,58 +74,56 @@ namespace MEPTools.TagLeaderStyle60
 
                     foreach (IndependentTag tag in tags)
                     {
-                        if (!tag.HasLeader)
-                        {
-                            skippedCount++;
-                            continue; 
-                        }
+                        if (!tag.HasLeader) { skippedCount++; continue; }
 
                         ICollection<Reference> refs = tag.GetTaggedReferences();
-                        if (refs == null || refs.Count == 0)
-                        {
-                            skippedCount++;
-                            continue;
-                        }
+                        if (refs == null || refs.Count == 0) { skippedCount++; continue; }
 
                         Reference reference = refs.FirstOrDefault();
                         if (reference == null) continue;
 
-                        // ★ 修复：优先获取真实的吸附终点，防止引线吸在管壁边缘导致角度算错
+                        // ★ 绝对安全的终点获取（绝不开关引线，防止状态被破坏）
                         XYZ leaderEnd = null;
-                        bool usedFallback = false;
-                        try
+                        string endSource = "";
+                        
+                        try { leaderEnd = tag.GetLeaderEnd(reference); } catch { }
+                        if (leaderEnd != null) endSource = "(TrueEnd)";
+
+                        if (leaderEnd == null && reference.GlobalPoint != null)
                         {
-                            if (tag.LeaderEndCondition == LeaderEndCondition.Attached)
+                            leaderEnd = reference.GlobalPoint;
+                            endSource = "(GlobalPoint)";
+                        }
+
+                        if (leaderEnd == null)
+                        {
+                            Element host = doc.GetElement(reference);
+                            if (host != null && host.Location is LocationCurve lc && lc.Curve != null)
                             {
-                                leaderEnd = tag.GetLeaderEnd(reference);
+                                IntersectionResult res = lc.Curve.Project(tag.TagHeadPosition);
+                                if (res != null) leaderEnd = res.XYZPoint;
                             }
-                        }
-                        catch { /* 容错处理 */ }
-
-                        if (leaderEnd == null)
-                        {
-                            // 如果是 Free 模式或获取失败，才退回宿主几何中心
-                            leaderEnd = ResolveHostCenter(doc, activeView, reference);
-                            usedFallback = true;
+                            endSource = "(Curve.Project)";
                         }
 
                         if (leaderEnd == null)
                         {
+                            logger.AppendLine($"[Skip] Tag {tag.Id} 无法获取引线终点，跳过。");
                             skippedCount++;
                             continue;
                         }
 
                         XYZ tagHead = tag.TagHeadPosition;
-                        double textCenterU = tagHead.DotProduct(upDir);
+                        
+                        // ★ 关键点：直接取 TagHeadPosition 的高度，保证第一段严格水平，绝不触碰 HasLeader
+                        double U_elbow = tagHead.DotProduct(upDir);
 
-                        // 视图坐标投影
                         double R_head = tagHead.DotProduct(rightDir);
                         double U_head = tagHead.DotProduct(upDir);
                         double R_end  = leaderEnd.DotProduct(rightDir);
                         double U_end  = leaderEnd.DotProduct(upDir);
                         double D_head = tagHead.DotProduct(viewDir);
 
-                        double U_elbow = textCenterU;
                         double R_elbow;
                         string note = "";
 
@@ -153,9 +137,8 @@ namespace MEPTools.TagLeaderStyle60
                             double dU = U_end - U_elbow;
                             if (Math.Abs(dU) < 1e-4)
                             {
-                                // ★ 修复：明确提示用户角度无法成形，因为元素与文字处于同一水平线
                                 R_elbow = R_end;
-                                note = "退化-元素与文字水平对齐，无法形成折角";
+                                note = "退化-水平对齐";
                                 degenerateCount++;
                             }
                             else
@@ -169,7 +152,7 @@ namespace MEPTools.TagLeaderStyle60
 
                         XYZ elbowPos = rightDir * R_elbow + upDir * U_elbow + viewDir * D_head;
 
-                        // 避免无意义触碰：检查当前肘点是否已经符合要求
+                        // 防无意义触碰检查
                         bool needsUpdate = true;
                         try
                         {
@@ -187,32 +170,24 @@ namespace MEPTools.TagLeaderStyle60
                             continue;
                         }
 
-                        // 统一设置肘点
                         bool anyModified = false;
                         foreach (Reference r in refs)
                         {
-                            try
-                            {
-                                tag.SetLeaderElbow(r, elbowPos);
-                                anyModified = true;
-                            }
-                            catch (Exception ex)
-                            {
-                                logger.LogException($"SetLeaderElbow tag={tag.Id}", ex);
-                            }
+                            try { tag.SetLeaderElbow(r, elbowPos); anyModified = true; } catch { }
                         }
 
                         if (anyModified) modifiedCount++;
                         
-                        logger.AppendLine($"[Tag {tag.Id}] end=({R_end:F3},{U_end:F3}) " +
-                                          $"elbow=({R_elbow:F3},{U_elbow:F3}) [{note}]{(usedFallback ? " (Fallback)" : "")}");
+                        logger.AppendLine($"[Tag {tag.Id}] mode={tag.LeaderEndCondition} | " +
+                                          $"R_end={R_end:F3} U_end={U_end:F3} {endSource} | " +
+                                          $"elbow=({R_elbow:F3},{U_elbow:F3}) [{note}]");
                     }
 
-                    // 无修改则回滚，避免污染 Last changed by
+                    // ★ 防污染：若无修改，直接回滚事务
                     if (modifiedCount == 0)
                     {
                         trans.RollBack();
-                        logger.AppendLine("[Info] 无实际修改，事务已回滚");
+                        logger.AppendLine("[Info] 无实际修改，事务已回滚（模型未受任何污染）");
                     }
                     else
                     {
@@ -221,10 +196,7 @@ namespace MEPTools.TagLeaderStyle60
                 }
 
                 string summary = $"完成：修改 {modifiedCount} 个，跳过 {skippedCount} 个，无需修改 {noChangeCount} 个。";
-                if (degenerateCount > 0)
-                {
-                    summary += $" 注意：有 {degenerateCount} 个标记因元素与文字完全对齐（水平），无法形成 60° 折角，已自动退化为水平引线。";
-                }
+                if (degenerateCount > 0) summary += $" 有 {degenerateCount} 个因水平对齐退化为直线。";
 
                 logger.EndSession(summary);
                 InfoCenterTip.Show(summary);
@@ -238,52 +210,23 @@ namespace MEPTools.TagLeaderStyle60
             }
         }
 
-        private static XYZ ResolveHostCenter(Document doc, View activeView, Reference reference)
-        {
-            Element host = doc.GetElement(reference);
-            if (host == null) return null;
-
-            if (host.Location is LocationPoint lp && lp.Point != null)
-                return lp.Point;
-
-            if (host.Location is LocationCurve lc && lc.Curve != null)
-                return lc.Curve.Evaluate(0.5, true);
-
-            BoundingBoxXYZ bb = host.get_BoundingBox(activeView);
-            if (bb != null && bb.Min != null && bb.Max != null)
-            {
-                try { return bb.Transform.OfPoint((bb.Min + bb.Max) * 0.5); }
-                catch { return (bb.Min + bb.Max) * 0.5; }
-            }
-            return null;
-        }
-
         private static double StableSign(double v)
         {
             if (Math.Abs(v) < SIGN_EPSILON) return 1.0;
             return Math.Sign(v);
         }
 
-        /// <summary>
-        /// 选择过滤器：仅允许选中 MEP 元素（管线/管件等）上的标签
-        /// </summary>
         private class MEPTagSelectionFilter : ISelectionFilter
         {
             public bool AllowElement(Element elem)
             {
                 if (!(elem is IndependentTag tag)) return false;
-
                 var refs = tag.GetTaggedReferences();
                 if (refs == null || refs.Count == 0) return false;
-
                 var host = tag.Document.GetElement(refs.First());
                 if (host == null) return false;
-
-                // 判断是不是 MEP 元素（管线、风管、桥架、管件等）
-                return host is MEPCurve || 
-                       (host.Category != null && host.Category.CategoryType == CategoryType.Model && host.Category.Id.IntegerValue != (int)BuiltInCategory.OST_Walls);
+                return host is MEPCurve || (host.Category != null && host.Category.CategoryType == CategoryType.Model);
             }
-
             public bool AllowReference(Reference reference, XYZ position) => true;
         }
     }

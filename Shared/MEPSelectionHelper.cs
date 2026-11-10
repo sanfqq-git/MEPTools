@@ -14,7 +14,7 @@ namespace MEPTools.Shared
             UIDocument uidoc,
             ISelectionFilter filter,
             string pickPrompt,
-            string infoTipNoPreselection = "请在视图中选择元素，按空格键结束",
+            string infoTipNoPreselection = null,   // 改：默认为 null，内部走配置
             int minCount = 1,
             bool useSpaceKey = true,
             bool singlePick = false)
@@ -35,12 +35,15 @@ namespace MEPTools.Shared
 
                 if (result.Count < originalCount)
                 {
-                    InfoCenterTip.Show($"已忽略 {originalCount - result.Count} 个不符合要求的元素");
+                    InfoCenterTip.Show(string.Format(
+                        MEPConfig.GetString("Selection.Msg.IgnoredCount", "已忽略 {0} 个不符合要求的元素"),
+                        originalCount - result.Count));
                 }
 
                 if (singlePick && result.Count > 1)
                 {
-                    InfoCenterTip.Show("当前操作仅支持单选，请只选择一个元素后重试");
+                    InfoCenterTip.Show(MEPConfig.GetString("Selection.Msg.SingleOnly", 
+                        "当前操作仅支持单选，请只选择一个元素后重试"));
                     return new List<Element>();
                 }
             }
@@ -48,10 +51,10 @@ namespace MEPTools.Shared
             // 2. 预选数量不足，启动交互选择
             if (result.Count < minCount)
             {
-                InfoCenterTip.Show(infoTipNoPreselection);
+                InfoCenterTip.Show(infoTipNoPreselection ?? 
+                    MEPConfig.GetString("Selection.DefaultPrompt", "请在视图中选择元素，按空格键结束"));
                 MEPLogger.Instance.AppendLine("预选元素不足，启动交互式选择。");
 
-                // ⭐ 核心修复：强行重置一次选择状态，防止 Cannot re-enter 异常
                 try { uidoc.Selection.SetElementIds(new List<ElementId>()); } catch { }
 
                 try
@@ -71,14 +74,16 @@ namespace MEPTools.Shared
                 }
                 catch (Autodesk.Revit.Exceptions.OperationCanceledException)
                 {
-                    InfoCenterTip.Show("操作已取消");
+                    // 修复：这里原本是硬编码，现替换为配置项
+                    InfoCenterTip.Show(MEPConfig.GetString("Selection.Msg.Cancelled", "操作已取消"));
                     MEPLogger.Instance.EndSession("Cancelled by user.");
                     return new List<Element>();
                 }
                 catch (Exception ex)
                 {
                     MEPLogger.Instance.LogException("MEPSelectionHelper.DoPickObjects", ex);
-                    InfoCenterTip.Show("选择过程中发生错误，请查看日志");
+                    // 修复：这里原本是硬编码，现替换为配置项
+                    InfoCenterTip.Show(MEPConfig.GetString("Selection.Msg.PickError", "选择过程中发生错误，请查看日志"));
                     MEPLogger.Instance.EndSession("Failed: " + ex.Message);
                     return new List<Element>();
                 }
@@ -87,7 +92,9 @@ namespace MEPTools.Shared
             // 3. 最终数量校验
             if (result.Count < minCount)
             {
-                InfoCenterTip.Show($"有效元素不足 {minCount} 个，操作已退出");
+                InfoCenterTip.Show(string.Format(
+                    MEPConfig.GetString("Selection.Msg.NotEnough", "有效元素不足 {0} 个，操作已退出"), 
+                    minCount));
                 MEPLogger.Instance.EndSession("Failed: Not enough valid elements.");
                 return new List<Element>();
             }
