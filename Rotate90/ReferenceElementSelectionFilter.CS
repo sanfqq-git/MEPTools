@@ -1,20 +1,38 @@
+using System.Collections.Generic;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI.Selection;
 
 namespace MEPTools.Rotate90
 {
     /// <summary>
-    /// 参考元素过滤器：允许选择任意元素，后续再验证能否提取轴线。
+    /// 参考元素过滤器：排除指定的目标元素，其余元素允许选择。
+    /// 实际能否提取轴线由 TryGetRotationAxis 再验证。
     /// </summary>
     public class ReferenceElementSelectionFilter : ISelectionFilter
     {
-        public bool AllowElement(Element elem) => true;
+        private readonly HashSet<ElementId> _excludeIds;
+
+        public ReferenceElementSelectionFilter(IEnumerable<Element> excludeElements = null)
+        {
+            _excludeIds = new HashSet<ElementId>();
+            if (excludeElements != null)
+            {
+                foreach (var e in excludeElements)
+                    if (e != null) _excludeIds.Add(e.Id);
+            }
+        }
+
+        public bool AllowElement(Element elem)
+        {
+            if (elem == null) return false;
+            return !_excludeIds.Contains(elem.Id);
+        }
 
         public bool AllowReference(Reference reference, XYZ position) => true;
     }
 
     /// <summary>
-    /// 目标元素过滤器：只允许 MEP 模型元素。
+    /// 目标元素过滤器：只允许 MEP 模型/注释元素。
     /// </summary>
     public class MEPTargetSelectionFilter : ISelectionFilter
     {

@@ -10,7 +10,7 @@ namespace MEPTools.Rotate90
 {
     /// <summary>
     /// 模态窗体，每次按空格键或点击按钮对目标元素执行一次 90° 旋转。
-    /// 继承 SpaceSubmitForm，空格键直接触发 AcceptButton。
+    /// 继承 SpaceSubmitForm，空格键触发 AcceptButton；ESC / 关闭按钮结束。
     /// </summary>
     public class Rotate90Form : SpaceSubmitForm
     {
@@ -19,6 +19,7 @@ namespace MEPTools.Rotate90
         private readonly List<Element> _targets;
         private readonly Line _axis;
         private readonly Button _rotateButton;
+        private readonly Button _closeButton;
 
         public Rotate90Form(UIDocument uidoc, List<Element> targets, Line axis)
         {
@@ -28,8 +29,8 @@ namespace MEPTools.Rotate90
             _axis = axis;
 
             Text = "90° 旋转";
-            Width = 320;
-            Height = 160;
+            Width = 360;
+            Height = 180;
             FormBorderStyle = FormBorderStyle.FixedToolWindow;
             ShowInTaskbar = false;
             StartPosition = FormStartPosition.CenterScreen;
@@ -39,14 +40,14 @@ namespace MEPTools.Rotate90
             // 说明标签
             var label = new Label
             {
-                Text = "按空格键旋转 90°\n可连续按空格多次翻转\n关闭窗口结束",
+                Text = "按空格键旋转 90°\n可连续按空格多次翻转\n按 ESC 或点击“关闭”结束",
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleCenter,
                 Font = new Font("Microsoft YaHei UI", 9F)
             };
             Controls.Add(label);
 
-            // 旋转按钮（同时作为 AcceptButton，空格键会触发它）
+            // 旋转按钮（作为 AcceptButton，空格键会触发它）
             _rotateButton = new Button
             {
                 Text = "旋转 90°",
@@ -55,7 +56,18 @@ namespace MEPTools.Rotate90
             };
             _rotateButton.Click += (s, e) => RotateTargetsOnce();
 
+            // 关闭按钮（作为 CancelButton，ESC 会触发它）
+            _closeButton = new Button
+            {
+                Text = "关闭 (ESC)",
+                Width = 120,
+                Height = 30,
+                DialogResult = DialogResult.Cancel
+            };
+            _closeButton.Click += (s, e) => this.Close();
+
             AcceptButton = _rotateButton;
+            CancelButton = _closeButton;
 
             var panel = new FlowLayoutPanel
             {
@@ -65,7 +77,22 @@ namespace MEPTools.Rotate90
                 Padding = new Padding(10, 8, 10, 8)
             };
             panel.Controls.Add(_rotateButton);
+            panel.Controls.Add(_closeButton);
             Controls.Add(panel);
+        }
+
+        /// <summary>
+        /// 先拦截 ESC，再走 SpaceSubmitForm 的空格逻辑。
+        /// </summary>
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == Keys.Escape)
+            {
+                this.DialogResult = DialogResult.Cancel;
+                this.Close();
+                return true;
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
         }
 
         /// <summary>

@@ -107,13 +107,22 @@ namespace MEPTools
                     CommandType = typeof(MEPTools.RemakeInPlaceCommands.Command)
                 },
 
-                // ⭐ 新增：90° 旋转物体
+                // ⭐ 90° 旋转物体 —— 参考轴版（保留）
                 new ButtonConfig
                 {
                     Id = "Btn_Rotate90",
                     Text = "90°旋转物体",
                     ToolTip = "选择参考元素提取旋转轴，再选目标 MEP 元素；在弹出的窗体中每按一次空格键，目标元素绕参考轴旋转 90°，可连续翻转",
                     CommandType = typeof(MEPTools.Rotate90.Rotate90Command)
+                },
+
+                // ⭐ 90° 旋转物体 —— XYZ 轴版（新增）
+                new ButtonConfig
+                {
+                    Id = "Btn_Rotate90ByAxis",
+                    Text = "90°旋转物体(XYZ轴)",
+                    ToolTip = "选择目标 MEP 元素后，在窗体中选择绕 X / Y / Z 世界轴旋转（过整体包围盒中心）；每按一次空格键旋转 90°，可连续翻转，ESC 结束",
+                    CommandType = typeof(MEPTools.Rotate90ByAxis.Rotate90ByAxisCommand)
                 },
 
                 // ================= 6. 工作集管理 (下拉菜单) =================

@@ -22,8 +22,28 @@ namespace MEPTools.Rotate90
 
             try
             {
-                // ---------- 1. 选择参考元素（用于提取旋转轴） ----------
-                var refFilter = new ReferenceElementSelectionFilter();
+                // ---------- 1. 先选择要旋转的 MEP 元素 ----------
+                var targetFilter = new MEPTargetSelectionFilter();
+                List<Element> targets = MEPSelectionHelper.GetElements(
+                    uidoc,
+                    targetFilter,
+                    "请选择要旋转的 MEP 元素",
+                    infoTipNoPreselection: "请选择要旋转的 MEP 元素，按空格键结束",
+                    minCount: 1,
+                    useSpaceKey: true,
+                    singlePick: false);
+
+                if (targets.Count == 0)
+                    return Result.Cancelled;
+
+                MEPLogger.Instance.AppendLine($"目标元素数量：{targets.Count}");
+
+                // 清空选择集，避免上次的目标元素被误当成轴线参考元素
+                try { uidoc.Selection.SetElementIds(new List<ElementId>()); } catch { }
+
+                // ---------- 2. 再选择参考元素（用于提取旋转轴） ----------
+                // 过滤器会排除已选的目标元素
+                var refFilter = new ReferenceElementSelectionFilter(targets);
                 List<Element> refList = MEPSelectionHelper.GetElements(
                     uidoc,
                     refFilter,
@@ -45,25 +65,10 @@ namespace MEPTools.Rotate90
                     return Result.Failed;
                 }
 
-                MEPLogger.Instance.AppendLine($"旋转轴：{rotationAxis.Origin} → {rotationAxis.Direction}");
+                MEPLogger.Instance.AppendLine(
+                    $"旋转轴：{rotationAxis.Origin} → {rotationAxis.Direction}");
 
-                // ---------- 2. 选择要旋转的 MEP 元素 ----------
-                var targetFilter = new MEPTargetSelectionFilter();
-                List<Element> targets = MEPSelectionHelper.GetElements(
-                    uidoc,
-                    targetFilter,
-                    "请选择要旋转的 MEP 元素",
-                    infoTipNoPreselection: "请选择要旋转的 MEP 元素，按空格键结束",
-                    minCount: 1,
-                    useSpaceKey: true,
-                    singlePick: false);
-
-                if (targets.Count == 0)
-                    return Result.Cancelled;
-
-                MEPLogger.Instance.AppendLine($"目标元素数量：{targets.Count}");
-
-                // ---------- 3. 进入旋转窗体（空格键连续触发） ----------
+                // ---------- 3. 进入旋转窗体（空格键连续触发，ESC 关闭） ----------
                 using (var form = new Rotate90Form(uidoc, targets, rotationAxis))
                 {
                     form.ShowDialog();
@@ -96,7 +101,6 @@ namespace MEPTools.Rotate90
                 if (curve is Line line)
                     return line;
 
-                // 非直线曲线取首尾点构造直线，保证 RotateElement 可用
                 XYZ p0 = curve.GetEndPoint(0);
                 XYZ p1 = curve.GetEndPoint(1);
                 if (!p0.IsAlmostEqualTo(p1))
@@ -105,7 +109,6 @@ namespace MEPTools.Rotate90
 
             if (elem.Location is LocationPoint locPoint)
             {
-                // 点式元素默认绕 Z 轴旋转（垂直轴）
                 return Line.CreateUnbound(locPoint.Point, XYZ.BasisZ);
             }
 
