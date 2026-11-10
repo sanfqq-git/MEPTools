@@ -64,7 +64,7 @@ namespace MEPTools.DuctResize
 
             try
             {
-                // 1. 弹出配置窗口 (封装在 Form 内部)
+                // 1. 弹出配置窗口
                 ResizeConfig oldConfig = ResizeConfigStorage.Load();
                 ResizeConfig newConfig = DuctResizeConfigForm.Show(oldConfig);
                 
@@ -123,51 +123,36 @@ namespace MEPTools.DuctResize
                     tr.SetFailureHandlingOptions(options);
                     tr.Start();
 
-                    // 4. 风管
+                    // 4. 处理风管 (加入强制 Regenerate 防止宽高覆盖)
                     foreach (var duct in ducts)
                     {
                         bool isFlipped = IsDuctFlipped(duct);
                         double setW = isFlipped ? h : w;
                         double setH = isFlipped ? w : h;
 
-                        duct.get_Parameter(BuiltInParameter.RBS_CURVE_WIDTH_PARAM)?.Set(setW);
-                        duct.get_Parameter(BuiltInParameter.RBS_CURVE_HEIGHT_PARAM)?.Set(setH);
+                        Parameter pW = duct.get_Parameter(BuiltInParameter.RBS_CURVE_WIDTH_PARAM);
+                        Parameter pH = duct.get_Parameter(BuiltInParameter.RBS_CURVE_HEIGHT_PARAM);
+
+                        if (pW != null && !pW.IsReadOnly)
+                        {
+                            pW.Set(setW);
+                            doc.Regenerate(); // 关键：设置宽度后重生成，防止高度设置被覆盖
+                        }
+
+                        if (pH != null && !pH.IsReadOnly)
+                        {
+                            pH.Set(setH);
+                            doc.Regenerate();
+                        }
                     }
 
-                    doc.Regenerate();
-
-                    // 5. 管件
+                    // 5. 处理管件 (使用智能反查)
                     foreach (var fi in fittings)
                     {
-                        Parameter pW = fi.get_Parameter(BuiltInParameter.RBS_CURVE_WIDTH_PARAM);
-                        Parameter pH = fi.get_Parameter(BuiltInParameter.RBS_CURVE_HEIGHT_PARAM);
-
-                        if (pW != null && !pW.IsReadOnly && pH != null && !pH.IsReadOnly)
-                        {
-                            pW.Set(w);
-                            pH.Set(h);
-                        }
-                        else
-                        {
-                            bool swapParams = IsNonOrthogonalFitting(fi);
-                            double setW = swapParams ? h : w;
-                            double setH = swapParams ? w : h;
-
-                            foreach (var paramName in newConfig.WidthParams)
-                            {
-                                Parameter p = fi.LookupParameter(paramName);
-                                if (p != null && !p.IsReadOnly) p.Set(setW);
-                            }
-
-                            foreach (var paramName in newConfig.HeightParams)
-                            {
-                                Parameter p = fi.LookupParameter(paramName);
-                                if (p != null && !p.IsReadOnly) p.Set(setH);
-                            }
-                        }
+                        UpdateFittingSize(fi, w, h, newConfig, doc);
+                        doc.Regenerate(); // 每个管件完成后刷新
                     }
 
-                    doc.Regenerate();
                     tr.Commit();
                 }
 
@@ -182,6 +167,133 @@ namespace MEPTools.DuctResize
                 InfoCenterTip.Show($"执行出错：{ex.Message}");
                 return Result.Failed;
             }
+        }
+
+        /// <summary>
+        /// 更新单个管件的宽度和高度（Connector反查优先 + 内置参数兜底 + 自定义参数兜底）
+        /// </summary>
+        private void UpdateFittingSize(FamilyInstance fi, double targetW, double targetH, ResizeConfig config, Document doc)
+        {
+            // 1. 前置判断：如果是非正交管件，必须先互换宽高
+            bool swapParams = IsNonOrthogonalFitting(fi);
+            double setW = swapParams ? targetH : targetW;
+            double setH = swapParams ? targetW : targetH;
+
+            bool widthSet = false;
+            bool heightSet = false;
+
+            // 策略 1：通过 Connector 反查关联的族参数（最智能、准确）
+            if (fi.MEPModel?.ConnectorManager != null)
+            {
+                foreach (Connector connector in fi.MEPModel.ConnectorManager.Connectors)
+                {
+                    if (connector.ConnectorType != ConnectorType.End) continue;
+
+                    MEPFamilyConnectorInfo connInfo = connector.GetMEPConnectorInfo() as MEPFamilyConnectorInfo;
+                    if (connInfo == null) continue;
+
+                    // 反查并设置宽度
+                    if (!widthSet)
+                    {
+                        ElementId widthParamId = connInfo.GetAssociateFamilyParameterId(new ElementId(BuiltInParameter.CONNECTOR_WIDTH));
+                        if (widthParamId != ElementId.InvalidElementId)
+                        {
+                            Parameter pW = GetParameterByElementId(fi, widthParamId);
+                            if (pW != null && !pW.IsReadOnly)
+                            {
+                                pW.Set(setW);
+                                widthSet = true;
+                                doc.Regenerate(); // 关键：防止高度覆盖宽度
+                            }
+                        }
+                    }
+
+                    // 反查并设置高度
+                    if (!heightSet)
+                    {
+                        ElementId heightParamId = connInfo.GetAssociateFamilyParameterId(new ElementId(BuiltInParameter.CONNECTOR_HEIGHT));
+                        if (heightParamId != ElementId.InvalidElementId)
+                        {
+                            Parameter pH = GetParameterByElementId(fi, heightParamId);
+                            if (pH != null && !pH.IsReadOnly)
+                            {
+                                pH.Set(setH);
+                                heightSet = true;
+                                doc.Regenerate();
+                            }
+                        }
+                    }
+
+                    if (widthSet && heightSet) break;
+                }
+            }
+
+            // 策略 2：如果 Connector 没找到，尝试内置参数（常见于系统自带的标准族）
+            if (!widthSet)
+            {
+                Parameter pW = fi.get_Parameter(BuiltInParameter.RBS_CURVE_WIDTH_PARAM);
+                if (pW != null && !pW.IsReadOnly)
+                {
+                    pW.Set(setW);
+                    widthSet = true;
+                    doc.Regenerate();
+                }
+            }
+            if (!heightSet)
+            {
+                Parameter pH = fi.get_Parameter(BuiltInParameter.RBS_CURVE_HEIGHT_PARAM);
+                if (pH != null && !pH.IsReadOnly)
+                {
+                    pH.Set(setH);
+                    heightSet = true;
+                    doc.Regenerate();
+                }
+            }
+
+            // 策略 3：兜底策略，使用用户配置的硬编码参数名匹配
+            if (!widthSet)
+            {
+                foreach (var paramName in config.WidthParams)
+                {
+                    Parameter p = fi.LookupParameter(paramName);
+                    if (p != null && !p.IsReadOnly)
+                    {
+                        p.Set(setW);
+                        widthSet = true;
+                        doc.Regenerate();
+                        break; // 找到了就跳过剩余的参数名
+                    }
+                }
+            }
+            if (!heightSet)
+            {
+                foreach (var paramName in config.HeightParams)
+                {
+                    Parameter p = fi.LookupParameter(paramName);
+                    if (p != null && !p.IsReadOnly)
+                    {
+                        p.Set(setH);
+                        heightSet = true;
+                        doc.Regenerate();
+                        break; // 找到了就跳过剩余的参数名
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// 根据 ElementId 获取管件实例上的参数
+        /// </summary>
+        private Parameter GetParameterByElementId(FamilyInstance fi, ElementId paramId)
+        {
+            // 参数不属于 Element 类，不能使用 doc.GetElement()。
+            // 在 FamilyInstance 的参数集合中按 Id 匹配
+            foreach (Parameter p in fi.Parameters)
+            {
+                if (p.Id == paramId)
+                    return p;
+            }
+            return null;
         }
 
         private bool IsDuctFlipped(Duct duct)
