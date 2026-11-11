@@ -43,6 +43,11 @@ namespace MEPTools.Shared
             new KeyValuePair<string,string>("Logger.FilePrefix",               "mep_"),
             new KeyValuePair<string,string>("MEPAlignment.HorizontalEps",      "1e-6"),
             new KeyValuePair<string,string>("MEPAlignment.AlignEps",           "1e-4"),
+
+            // 👇 新增的 TagGroup 排版配置项 👇
+            new KeyValuePair<string,string>("TagGroup.LineSpacing",            "300.0"),
+            new KeyValuePair<string,string>("TagGroup.BlankLines",             "2"),
+            new KeyValuePair<string,string>("TagGroup.Tolerance",              "25.0"),
         };
 
         private static void EnsureLoaded()
@@ -179,9 +184,6 @@ namespace MEPTools.Shared
             return parts.Length > 0 ? parts : fallback;
         }
 
-        // ============================================================
-        // 新增：设置与保存 API
-        // ============================================================
         public static void SetValue(string key, string value)
         {
             EnsureLoaded();
@@ -211,12 +213,10 @@ namespace MEPTools.Shared
                     sb.AppendLine("# =================================================");
                     sb.AppendLine();
                     
-                    foreach (var kv in Defaults)
+                    // 重要修复：遍历所有内存中的配置（包含动态新增的），而不是只遍历 Defaults
+                    foreach (var kv in _values)
                     {
-                        if (_values.TryGetValue(kv.Key, out string val))
-                            sb.AppendLine(kv.Key + "=" + val);
-                        else
-                            sb.AppendLine(kv.Key + "=" + kv.Value);
+                        sb.AppendLine(kv.Key + "=" + kv.Value);
                     }
                     
                     File.WriteAllText(_configPath, sb.ToString(), new UTF8Encoding(false));

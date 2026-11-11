@@ -18,14 +18,15 @@ namespace MEPTools.TagLeaderStyle60
     {
         private const double TargetAngleDeg = 60.0;
         private const double SIGN_EPSILON = 1e-3;
-        private const double ELBOW_TOLERANCE = 1e-3; // 约0.3mm
+        // 容差 3mm，防止误杀正确的
+        private const double ELBOW_TOLERANCE = 0.01; 
 
         public Result Execute(ExternalCommandData commandData,
                               ref string message,
                               ElementSet elements)
         {
             var logger = MEPLogger.Instance;
-            logger.StartSession("MEPTagLeader60 - 引线折角 60°（绝对安全防乱飞版）");
+            logger.StartSession("MEPTagLeader60 - 60°折角（文字中线兼容防飞天版）");
 
             try
             {
@@ -36,7 +37,6 @@ namespace MEPTools.TagLeaderStyle60
                 View activeView = doc.ActiveView;
                 if (activeView == null) { InfoCenterTip.Show("无活动视图"); return Result.Cancelled; }
 
-                // 1. 预选获取 & 2. 无预选交互选择
                 List<IndependentTag> tags = Preselected.GetSelectedIndependentTags(uidoc, activeView);
 
                 if (tags.Count == 0)
@@ -50,11 +50,7 @@ namespace MEPTools.TagLeaderStyle60
                     tags = picked.OfType<IndependentTag>().ToList();
                 }
 
-                if (tags.Count == 0)
-                {
-                    InfoCenterTip.Show("未选择任何标记，操作取消");
-                    return Result.Cancelled;
-                }
+                if (tags.Count == 0) { InfoCenterTip.Show("未选择任何标记，操作取消"); return Result.Cancelled; }
 
                 XYZ rightDir = activeView.RightDirection.Normalize();
                 XYZ upDir    = activeView.UpDirection.Normalize();
@@ -66,7 +62,6 @@ namespace MEPTools.TagLeaderStyle60
                 int modifiedCount   = 0;
                 int skippedCount    = 0;
                 int noChangeCount   = 0;
-                int degenerateCount = 0;
 
                 using (Transaction trans = new Transaction(doc, $"调整标记引线为 {TargetAngleDeg}°"))
                 {
@@ -82,47 +77,75 @@ namespace MEPTools.TagLeaderStyle60
                         Reference reference = refs.FirstOrDefault();
                         if (reference == null) continue;
 
-                        // ★ 绝对安全的终点获取（绝不开关引线，防止状态被破坏）
+                        // =======================================================
+                        // 1. 确定绝对水平的参考高度
+                        // 完美解法：如果存在旧折点，直接使用旧折点的高度！这完美避开了P1/P2的偏移问题。
+                        // =======================================================
+                        double U_elbow = tag.TagHeadPosition.DotProduct(upDir);
+                        double R_elbow_old = tag.TagHeadPosition.DotProduct(rightDir);
+                        
+                        try
+                        {
+                            XYZ currentElbow = tag.GetLeaderElbow(reference);
+                            if (currentElbow != null && !currentElbow.IsZeroLength())
+                            {
+                                U_elbow = currentElbow.DotProduct(upDir);
+                                R_elbow_old = currentElbow.DotProduct(rightDir);
+                            }
+                        }
+                        catch { }
+
+                        // =======================================================
+                        // 2. 确定终点（拒绝包围盒，防飞天）
+                        // =======================================================
                         XYZ leaderEnd = null;
                         string endSource = "";
-                        
+
+                        // 优先取真实终点（Free模式）
                         try { leaderEnd = tag.GetLeaderEnd(reference); } catch { }
-                        if (leaderEnd != null) endSource = "(TrueEnd)";
+                        if (leaderEnd != null && !leaderEnd.IsZeroLength()) endSource = "(TrueEnd)";
 
-                        if (leaderEnd == null && reference.GlobalPoint != null)
-                        {
-                            leaderEnd = reference.GlobalPoint;
-                            endSource = "(GlobalPoint)";
-                        }
-
+                        // 次选：宿主管线投影（风管、水管）
                         if (leaderEnd == null)
                         {
                             Element host = doc.GetElement(reference);
                             if (host != null && host.Location is LocationCurve lc && lc.Curve != null)
                             {
                                 IntersectionResult res = lc.Curve.Project(tag.TagHeadPosition);
-                                if (res != null) leaderEnd = res.XYZPoint;
+                                if (res != null && res.XYZPoint != null)
+                                {
+                                    leaderEnd = res.XYZPoint;
+                                    endSource = "(Curve.Project)";
+                                }
                             }
-                            endSource = "(Curve.Project)";
                         }
 
+                        // 最后：设备原点（法兰、风阀等没有LocationCurve）
                         if (leaderEnd == null)
                         {
-                            logger.AppendLine($"[Skip] Tag {tag.Id} 无法获取引线终点，跳过。");
+                            Element host = doc.GetElement(reference);
+                            if (host != null && host.Location is LocationPoint lp && lp.Point != null)
+                            {
+                                leaderEnd = lp.Point;
+                                endSource = "(LocationPoint)";
+                            }
+                        }
+
+                        // 拿不到绝不瞎猜，宁可不动也不乱飞
+                        if (leaderEnd == null)
+                        {
+                            logger.AppendLine($"[Skip] Tag {tag.Id} 无法获取真实终点，跳过。");
                             skippedCount++;
                             continue;
                         }
 
-                        XYZ tagHead = tag.TagHeadPosition;
-                        
-                        // ★ 关键点：直接取 TagHeadPosition 的高度，保证第一段严格水平，绝不触碰 HasLeader
-                        double U_elbow = tagHead.DotProduct(upDir);
-
-                        double R_head = tagHead.DotProduct(rightDir);
-                        double U_head = tagHead.DotProduct(upDir);
-                        double R_end  = leaderEnd.DotProduct(rightDir);
+                        // =======================================================
+                        // 3. 计算折点
+                        // =======================================================
+                        double R_head = tag.TagHeadPosition.DotProduct(rightDir);
                         double U_end  = leaderEnd.DotProduct(upDir);
-                        double D_head = tagHead.DotProduct(viewDir);
+                        double R_end  = leaderEnd.DotProduct(rightDir);
+                        double D_head = tag.TagHeadPosition.DotProduct(viewDir);
 
                         double R_elbow;
                         string note = "";
@@ -139,12 +162,12 @@ namespace MEPTools.TagLeaderStyle60
                             {
                                 R_elbow = R_end;
                                 note = "退化-水平对齐";
-                                degenerateCount++;
                             }
                             else
                             {
                                 double dR = Math.Abs(dU) / tanA;
-                                double sign = StableSign(R_end - R_head);
+                                // 用旧折点判方向，防震荡
+                                double sign = StableSign(R_end - R_elbow_old);
                                 R_elbow = R_end - sign * dR;
                                 note = $"dR={dR:F3},sign={sign:+0;-0}";
                             }
@@ -152,7 +175,9 @@ namespace MEPTools.TagLeaderStyle60
 
                         XYZ elbowPos = rightDir * R_elbow + upDir * U_elbow + viewDir * D_head;
 
-                        // 防无意义触碰检查
+                        // =======================================================
+                        // 4. 防误杀检测（3mm 容差）
+                        // =======================================================
                         bool needsUpdate = true;
                         try
                         {
@@ -183,7 +208,7 @@ namespace MEPTools.TagLeaderStyle60
                                           $"elbow=({R_elbow:F3},{U_elbow:F3}) [{note}]");
                     }
 
-                    // ★ 防污染：若无修改，直接回滚事务
+                    // 5. 无修改则回滚，防污染
                     if (modifiedCount == 0)
                     {
                         trans.RollBack();
@@ -196,8 +221,6 @@ namespace MEPTools.TagLeaderStyle60
                 }
 
                 string summary = $"完成：修改 {modifiedCount} 个，跳过 {skippedCount} 个，无需修改 {noChangeCount} 个。";
-                if (degenerateCount > 0) summary += $" 有 {degenerateCount} 个因水平对齐退化为直线。";
-
                 logger.EndSession(summary);
                 InfoCenterTip.Show(summary);
                 return Result.Succeeded;

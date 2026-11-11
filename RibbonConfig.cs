@@ -45,11 +45,16 @@ namespace MEPTools
                 // ================= 4. 对齐与排序 (面板直接展示) =================
                 new ButtonConfig { Id = "Btn_AlignBottomElevation",      Text = "底部平齐",             ToolTip = "将选中的 MEP 元素底部标高对齐到指定的基准", CommandType = typeof(MEPTools.MEPAlignBottomElevation.Command) },
                 new ButtonConfig { Id = "Btn_GroupSortAlign",            Text = "分组排序对齐",         ToolTip = "按底部标高分组，组内按净间距自动排布", CommandType = typeof(MEPTools.MEPGroupSortAlign.Command) },
+                
+                // 高度分组 TAG 主功能
+                new ButtonConfig { Id = "Btn_GroupTagByElevation",       Text = "高度分组 TAG",         ToolTip = "按高度分组打Tag并支持附加行", CommandType = typeof(MEPTools.MEPGroupTag.Cmd_Debug) },
+                // TAG 排版设置界面
+                new ButtonConfig { Id = "Btn_GroupTagSettings",          Text = "TAG排版设置",          ToolTip = "设置排版行距、空行及附加行的Tag族", CommandType = typeof(MEPTools.MEPGroupTag.Cmd_TagGroupSettings) },
+
                 new ButtonConfig { Id = "Btn_TagAlignLeft",              Text = "标记左对齐并堆叠",     ToolTip = "将选中的标记统一左对齐，并按当前上下顺序调整间距堆叠", CommandType = typeof(MEPTools.MEPTagAlignLeft.Command) },
                 new ButtonConfig { Id = "Btn_TagAlignLeftOnly",          Text = "标记仅左对齐",         ToolTip = "仅将选中的标记左侧对齐，不改变其垂直位置", CommandType = typeof(MEPTools.MEPTagAlignLeft.CommandAlignLeftOnly) },
                 new ButtonConfig { Id = "Btn_TagStackOnly",              Text = "标记仅堆叠",           ToolTip = "保持选中的标记现有相对顺序，统一调整上下堆叠间距", CommandType = typeof(MEPTools.MEPTagAlignLeft.CommandStackOnly) },
                 
-                // 👇 此处为新增的设置按钮 👇
                 new ButtonConfig { Id = "Btn_TagAlignSettings",          Text = "标记对齐设置",         ToolTip = "设置标记左对齐和堆叠的行距（毫米）", CommandType = typeof(MEPTools.MEPTagAlignLeft.CommandSetting) },
                 
                 new ButtonConfig { Id = "Btn_TagLeaderStyle60",          Text = "MEPTag60°",            ToolTip = "将选中的标记修改引线为60度折线", CommandType = typeof(MEPTools.TagLeaderStyle60.Command) },
