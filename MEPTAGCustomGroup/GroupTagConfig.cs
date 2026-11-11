@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO; // 新增
 using System.Linq;
+using System.Reflection;
 using System.Windows.Forms;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
@@ -12,6 +14,8 @@ using Point = System.Drawing.Point;
 using Button = System.Windows.Forms.Button;
 using Label = System.Windows.Forms.Label;
 using Size = System.Drawing.Size;
+using OpenFileDialog = System.Windows.Forms.OpenFileDialog;
+using SaveFileDialog = System.Windows.Forms.SaveFileDialog;
 
 namespace MEPTools.MEPGroupTag
 {
@@ -34,6 +38,7 @@ namespace MEPTools.MEPGroupTag
 
         public List<ExtraRowRule> ExtraRules { get; set; } = new List<ExtraRowRule>();
 
+        // ================= 全局配置存取 =================
         public static GroupTagConfig Load()
         {
             var cfg = new GroupTagConfig();
@@ -45,7 +50,6 @@ namespace MEPTools.MEPGroupTag
             cfg.CableTrayTagType = MEPConfig.GetString("TagGroup.CableTrayTagType", "");
             cfg.PipeTagType = MEPConfig.GetString("TagGroup.PipeTagType", "");
 
-            // 反序列化规则：格式 "1,T1,族A;After_1,T2,族B;"
             string rulesStr = MEPConfig.GetString("TagGroup.ExtraRules", "");
             if (!string.IsNullOrWhiteSpace(rulesStr))
             {
@@ -81,6 +85,63 @@ namespace MEPTools.MEPGroupTag
             
             MEPConfig.Save();
         }
+
+        // ================= 独立文件存取（用于导入/导出） =================
+        public void SaveToFile(string path)
+        {
+            var lines = new List<string>
+            {
+                $"Tolerance={GroupToleranceMM}",
+                $"LineSpacing={LineSpacingMM}",
+                $"BlankLines={BlankLines}",
+                $"DuctTagType={DuctTagType}",
+                $"CableTrayTagType={CableTrayTagType}",
+                $"PipeTagType={PipeTagType}"
+            };
+            var ruleItems = ExtraRules.Select(r => $"{r.GroupIndex},{r.TagText},{r.TagSymbolName}");
+            lines.Add($"ExtraRules={string.Join(";", ruleItems)}");
+            File.WriteAllLines(path, lines);
+        }
+
+        public static GroupTagConfig LoadFromFile(string path)
+        {
+            var cfg = new GroupTagConfig();
+            if (!File.Exists(path)) return cfg;
+
+            var lines = File.ReadAllLines(path);
+            foreach (var line in lines)
+            {
+                var parts = line.Split(new[] { '=' }, 2);
+                if (parts.Length != 2) continue;
+                string key = parts[0].Trim();
+                string val = parts[1].Trim();
+
+                if (key == "Tolerance" && double.TryParse(val, out double t)) cfg.GroupToleranceMM = t;
+                else if (key == "LineSpacing" && double.TryParse(val, out double ls)) cfg.LineSpacingMM = ls;
+                else if (key == "BlankLines" && int.TryParse(val, out int bl)) cfg.BlankLines = bl;
+                else if (key == "DuctTagType") cfg.DuctTagType = val;
+                else if (key == "CableTrayTagType") cfg.CableTrayTagType = val;
+                else if (key == "PipeTagType") cfg.PipeTagType = val;
+                else if (key == "ExtraRules")
+                {
+                    var items = val.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var item in items)
+                    {
+                        var rParts = item.Split(',');
+                        if (rParts.Length == 3)
+                        {
+                            cfg.ExtraRules.Add(new ExtraRowRule 
+                            { 
+                                GroupIndex = rParts[0].Trim(), 
+                                TagText = rParts[1].Trim(), 
+                                TagSymbolName = rParts[2].Trim() 
+                            });
+                        }
+                    }
+                }
+            }
+            return cfg;
+        }
     }
 
     [Transaction(TransactionMode.Manual)]
@@ -108,7 +169,7 @@ namespace MEPTools.MEPGroupTag
         
         private NumericUpDown nudTolerance, nudLineSpacing, nudBlankLines;
         private DataGridView dgvExtra;
-        private Button btnOk;
+        private Button btnOk, btnImport, btnExport;
         
         private Dictionary<string, FamilySymbol> _allTagSymbols;
 
@@ -159,22 +220,18 @@ namespace MEPTools.MEPGroupTag
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
                 RowHeadersVisible = false
             };
+
+            typeof(DataGridView).InvokeMember("DoubleBuffered", 
+                BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.SetProperty, 
+                null, dgvExtra, new object[] { true });
+
             dgvExtra.DataError += (s, e) => { e.ThrowException = false; e.Cancel = true; };
             
-            // 👇 修改：增加“后”的选项
             var colPosition = new DataGridViewComboBoxColumn { Name = "GroupIndex", HeaderText = "插入位置", FillWeight = 30 };
             var positions = new List<string> { 
                 "每一组前", "每一组后",
-                "第1组前", "第1组后",
-                "第2组前", "第2组后",
-                "第3组前", "第3组后",
-                "第4组前", "第4组后",
-                "第5组前", "第5组后",
-                "第6组前", "第6组后",
-                "第7组前", "第7组后",
-                "第8组前", "第8组后",
-                "第9组前", "第9组后",
-                "第10组前", "第10组后"
+                "第1组前", "第1组后", "第2组前", "第2组后", "第3组前", "第3组后", "第4组前", "第4组后", "第5组前", "第5组后",
+                "第6组前", "第6组后", "第7组前", "第7组后", "第8组前", "第8组后", "第9组前", "第9组后", "第10组前", "第10组后"
             };
             colPosition.Items.AddRange(positions.ToArray());
             dgvExtra.Columns.Add(colPosition);
@@ -187,7 +244,16 @@ namespace MEPTools.MEPGroupTag
             this.Controls.Add(dgvExtra);
             y += 360;
 
-            btnOk = new Button { Text = "保存设置 (空格)", Location = new Point(340, y), Width = 120, Height = 32, DialogResult = DialogResult.OK };
+            // 👇 底部按钮区（加入输入/输出） 👇
+            btnImport = new Button { Text = "输入配置", Location = new Point(labelX, y), Width = 100, Height = 32 };
+            btnImport.Click += BtnImport_Click;
+            this.Controls.Add(btnImport);
+
+            btnExport = new Button { Text = "输出配置", Location = new Point(labelX + 110, y), Width = 100, Height = 32 };
+            btnExport.Click += BtnExport_Click;
+            this.Controls.Add(btnExport);
+
+            btnOk = new Button { Text = "保存设置 (空格)", Location = new Point(660, y), Width = 120, Height = 32, DialogResult = DialogResult.OK };
             btnOk.Click += BtnOk_Click;
             this.AcceptButton = btnOk;
             this.Controls.Add(btnOk);
@@ -222,6 +288,12 @@ namespace MEPTools.MEPGroupTag
                 _config.ExtraRules.Add(new ExtraRowRule { GroupIndex = "After_1", TagText = "T2", TagSymbolName = allTagNames.FirstOrDefault() ?? "" });
             }
 
+            RefreshGrid();
+        }
+
+        private void RefreshGrid()
+        {
+            dgvExtra.Rows.Clear();
             foreach (var rule in _config.ExtraRules)
             {
                 string displayPos = "";
@@ -235,9 +307,60 @@ namespace MEPTools.MEPGroupTag
             }
         }
 
+        private void BtnImport_Click(object sender, EventArgs e)
+        {
+            using (OpenFileDialog ofd = new OpenFileDialog { Filter = "TAG配置文件 (*.txt)|*.txt", Title = "选择要导入的配置文件" })
+            {
+                if (ofd.ShowDialog() == DialogResult.OK)
+                {
+                    var newConfig = GroupTagConfig.LoadFromFile(ofd.FileName);
+                    if (newConfig != null)
+                    {
+                        _config.GroupToleranceMM = newConfig.GroupToleranceMM;
+                        _config.LineSpacingMM = newConfig.LineSpacingMM;
+                        _config.BlankLines = newConfig.BlankLines;
+                        _config.DuctTagType = newConfig.DuctTagType;
+                        _config.CableTrayTagType = newConfig.CableTrayTagType;
+                        _config.PipeTagType = newConfig.PipeTagType;
+                        _config.ExtraRules = newConfig.ExtraRules;
+
+                        nudTolerance.Value = (decimal)_config.GroupToleranceMM;
+                        nudLineSpacing.Value = (decimal)_config.LineSpacingMM;
+                        nudBlankLines.Value = _config.BlankLines;
+
+                        RefreshGrid();
+                        InfoCenterTip.Show("配置导入成功，请点击【保存设置】生效。");
+                    }
+                }
+            }
+        }
+
+        private void BtnExport_Click(object sender, EventArgs e)
+        {
+            CollectDataFromUI(); // 强制提交表格数据
+
+            using (SaveFileDialog sfd = new SaveFileDialog { Filter = "TAG配置文件 (*.txt)|*.txt", Title = "保存配置文件", FileName = "MEP_GroupTag_Config.txt" })
+            {
+                if (sfd.ShowDialog() == DialogResult.OK)
+                {
+                    _config.SaveToFile(sfd.FileName);
+                    InfoCenterTip.Show("配置导出成功。");
+                }
+            }
+        }
+
         private void BtnOk_Click(object sender, EventArgs e)
         {
-            // 强制提交 UI 数据
+            CollectDataFromUI();
+            _config.Save();
+            InfoCenterTip.Show("配置已保存到本地全局设置。");
+        }
+
+        /// <summary>
+        /// 提取 UI 数据到 _config
+        /// </summary>
+        private void CollectDataFromUI()
+        {
             dgvExtra.EndEdit();
             dgvExtra.CommitEdit(DataGridViewDataErrorContexts.Commit);
             dgvExtra.CurrentCell = null; 
@@ -254,7 +377,6 @@ namespace MEPTools.MEPGroupTag
                 string posStr = row.Cells["GroupIndex"].Value?.ToString()?.Trim() ?? "";
                 string gIdx = "";
                 
-                // 👇 解析：区分组前和组后
                 if (posStr.StartsWith("第") && posStr.Contains("组"))
                 {
                     string num = new string(posStr.Where(char.IsDigit).ToArray());
@@ -277,7 +399,6 @@ namespace MEPTools.MEPGroupTag
                     _config.ExtraRules.Add(new ExtraRowRule { GroupIndex = gIdx, TagText = tText, TagSymbolName = tSymbol });
                 }
             }
-            _config.Save();
         }
     }
 }

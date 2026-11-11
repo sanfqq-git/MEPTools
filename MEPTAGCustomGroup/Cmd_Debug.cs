@@ -100,10 +100,10 @@ namespace MEPTools.MEPGroupTag
                         .ThenBy(e => e.WorldCenter.X)
                         .ToList();
 
-                    // ============ 核心1：在每一组前插入 自定义附加行 ============
-                    var rulesForGroup = config.ExtraRules.Where(r => r.GroupIndex == groupIndex.ToString() || r.GroupIndex == "*").ToList();
+                    // ============ 核心1：在每一组【前】插入 自定义附加行 ============
+                    var rulesBefore = config.ExtraRules.Where(r => r.GroupIndex == groupIndex.ToString() || r.GroupIndex == "*").ToList();
                     
-                    foreach (var rule in rulesForGroup)
+                    foreach (var rule in rulesBefore)
                     {
                         if (!allTagSymbols.TryGetValue(rule.TagSymbolName, out FamilySymbol targetSym))
                         {
@@ -111,7 +111,6 @@ namespace MEPTools.MEPGroupTag
                             continue; 
                         }
 
-                        // 根据 Tag 族类别寻找对应宿主
                         Element hostElem = null;
                         var catId = targetSym.Category.Id.IntegerValue;
                         if (catId == (int)BuiltInCategory.OST_DuctTags) 
@@ -125,7 +124,7 @@ namespace MEPTools.MEPGroupTag
 
                         if (hostElem == null)
                         {
-                            TaskDialog.Show("宿主缺失", $"设定中针对第 {groupIndex} 组配置了标签 [{rule.TagText}] ({rule.TagSymbolName})，\n但是当前组内没有找到对应类别的实体作为宿主！\n请检查选中的元素或修改设定。");
+                            TaskDialog.Show("宿主缺失", $"设定中针对第 {groupIndex} 组配置了标签 [{rule.TagText}] ({rule.TagSymbolName})，\n但是当前组内没有找到对应类别的实体作为宿主！");
                             t.RollBack();
                             return Result.Cancelled;
                         }
@@ -135,12 +134,12 @@ namespace MEPTools.MEPGroupTag
 
                         if (!targetSym.IsActive) targetSym.Activate();
 
+                        // 【修复】：生成时直接传入计算好的位置，绝不用 basePickPt 重叠
+                        XYZ createPos = new XYZ(basePickPt.X, currentY, basePickPt.Z);
                         IndependentTag prefixTag = IndependentTag.Create(
-                            doc, targetSym.Id, activeView.Id, refPair.Ref, false, TagOrientation.Horizontal, basePickPt);
+                            doc, targetSym.Id, activeView.Id, refPair.Ref, false, TagOrientation.Horizontal, createPos);
                         
                         TrySetTagText(prefixTag, rule.TagText);
-
-                        prefixTag.TagHeadPosition = new XYZ(basePickPt.X, currentY, basePickPt.Z);
                         currentY -= lineSpacingFt;
                     }
 
@@ -155,14 +154,59 @@ namespace MEPTools.MEPGroupTag
                         if (targetSym == null) continue;
                         if (!targetSym.IsActive) targetSym.Activate();
 
+                        XYZ createPos = new XYZ(basePickPt.X, currentY, basePickPt.Z);
                         IndependentTag newTag = IndependentTag.Create(
-                            doc, targetSym.Id, activeView.Id, item.Ref, false, TagOrientation.Horizontal, basePickPt);
+                            doc, targetSym.Id, activeView.Id, item.Ref, false, TagOrientation.Horizontal, createPos);
 
-                        newTag.TagHeadPosition = new XYZ(basePickPt.X, currentY, basePickPt.Z);
                         currentY -= lineSpacingFt;
                     }
 
-                    // ============ 核心3：组间空行 ============
+                    // ============ 核心3：在每一组【后】插入 自定义附加行 ============
+                    var rulesAfter = config.ExtraRules.Where(r => r.GroupIndex == "After_" + groupIndex.ToString() || r.GroupIndex == "*After").ToList();
+                    
+                    MEPLogger.Instance.AppendLine($"[日志] 第 {groupIndex} 组后置规则数: {rulesAfter.Count}");
+                    
+                    foreach (var rule in rulesAfter)
+                    {
+                        if (!allTagSymbols.TryGetValue(rule.TagSymbolName, out FamilySymbol targetSym))
+                        {
+                            MEPLogger.Instance.AppendLine($"[警告] 找不到指定的 Tag 族: {rule.TagSymbolName}");
+                            continue; 
+                        }
+
+                        Element hostElem = null;
+                        var catId = targetSym.Category.Id.IntegerValue;
+                        if (catId == (int)BuiltInCategory.OST_DuctTags) 
+                            hostElem = group.Elements.FirstOrDefault(e => e.Elem is Duct)?.Elem;
+                        else if (catId == (int)BuiltInCategory.OST_CableTrayTags) 
+                            hostElem = group.Elements.FirstOrDefault(e => e.Elem is CableTray)?.Elem;
+                        else if (catId == (int)BuiltInCategory.OST_PipeTags) 
+                            hostElem = group.Elements.FirstOrDefault(e => e.Elem is Pipe)?.Elem;
+                        else 
+                            hostElem = group.Elements.FirstOrDefault()?.Elem;
+
+                        if (hostElem == null)
+                        {
+                            TaskDialog.Show("宿主缺失", $"设定中针对第 {groupIndex} 组【后】配置了标签 [{rule.TagText}] ({rule.TagSymbolName})，\n但是当前组内没有找到对应类别的实体作为宿主！");
+                            t.RollBack();
+                            return Result.Cancelled;
+                        }
+
+                        var refPair = selectedData.FirstOrDefault(d => d.Elem.Id == hostElem.Id);
+                        if (refPair.Ref == null) continue;
+
+                        if (!targetSym.IsActive) targetSym.Activate();
+
+                        // 【修复】：生成时直接传入计算好的位置
+                        XYZ createPos = new XYZ(basePickPt.X, currentY, basePickPt.Z);
+                        IndependentTag suffixTag = IndependentTag.Create(
+                            doc, targetSym.Id, activeView.Id, refPair.Ref, false, TagOrientation.Horizontal, createPos);
+                        
+                        TrySetTagText(suffixTag, rule.TagText);
+                        currentY -= lineSpacingFt;
+                    }
+
+                    // ============ 核心4：组间空行 ============
                     currentY -= (config.BlankLines * lineSpacingFt);
                 }
 
@@ -188,7 +232,7 @@ namespace MEPTools.MEPGroupTag
             }
             else
             {
-                MEPLogger.Instance.AppendLine($"[警告] 未在族 {tag.Name} 中找到可写文字参数，T1/T2 无法显示。");
+                MEPLogger.Instance.AppendLine($"[警告] 未在族 {tag.Name} 中找到可写文字参数，{text} 无法显示。");
             }
         }
 
