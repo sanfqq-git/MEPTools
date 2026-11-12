@@ -10,7 +10,6 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using MEPTools.Shared;
 
-// 解决类型冲突的别名
 using Point = System.Drawing.Point;
 using Color = System.Drawing.Color;
 using Button = System.Windows.Forms.Button;
@@ -19,8 +18,8 @@ using Size = System.Drawing.Size;
 using ComboBox = System.Windows.Forms.ComboBox;
 using TextBox = System.Windows.Forms.TextBox;
 using Control = System.Windows.Forms.Control; 
-using Form = System.Windows.Forms.Form; // 👈 修复 Form 冲突
-using ListBox = System.Windows.Forms.ListBox; // 👈 顺便加上 ListBox 别名以防万一
+using Form = System.Windows.Forms.Form; 
+using ListBox = System.Windows.Forms.ListBox; 
 using OpenFileDialog = System.Windows.Forms.OpenFileDialog;
 using SaveFileDialog = System.Windows.Forms.SaveFileDialog;
 
@@ -165,6 +164,7 @@ namespace MEPTools.MEPGroupTag
         private NumericUpDown nudTolerance, nudLineSpacing, nudBlankLines;
         private DataGridView dgvExtra;
         private Button btnOk, btnImport, btnExport, btnClear;
+        private Button btnInsert, btnUp, btnDown;
 
         private List<string> _ductTagsAll = new List<string>();
         private List<string> _pipeTagsAll = new List<string>();
@@ -183,14 +183,14 @@ namespace MEPTools.MEPGroupTag
             this.Text = "高度分组 TAG - 规则设置";
             this.ClientSize = new Size(950, 580); 
             this.StartPosition = FormStartPosition.CenterScreen;
-            this.FormBorderStyle = FormBorderStyle.FixedDialog;
-            this.MaximizeBox = false;
+            this.FormBorderStyle = FormBorderStyle.Sizable;
+            this.MaximizeBox = true;
+            this.MinimumSize = new Size(800, 450);
             this.Font = new Font("Microsoft YaHei", 9F, FontStyle.Regular, GraphicsUnit.Point, 134);
 
             int y = 20, gap = 35;
             int labelX = 20, inputX = 140;
 
-            // 基础参数
             var lblTol = new Label { Text = "分组容差(mm):", Location = new Point(labelX, y + 3), AutoSize = true };
             nudTolerance = new NumericUpDown { Location = new Point(inputX, y), Width = 80, Minimum = 1, Maximum = 1000, DecimalPlaces = 1 };
             this.Controls.Add(lblTol); this.Controls.Add(nudTolerance); 
@@ -204,18 +204,19 @@ namespace MEPTools.MEPGroupTag
             this.Controls.Add(lblBlank); this.Controls.Add(nudBlankLines);
             y += gap + 10;
 
-            // 表格区
             var lblExtra = new Label { Text = "组前/组后附加标签设定 (提示：双击右侧三个族列可弹出大窗口搜索):", Location = new Point(labelX, y), AutoSize = true, Font = new Font(this.Font, FontStyle.Bold), ForeColor = Color.DarkBlue };
             this.Controls.Add(lblExtra); y += 25;
 
             dgvExtra = new DataGridView
             {
                 Location = new Point(labelX, y),
-                Size = new Size(910, 350), 
+                Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
+                Size = new Size(910, 320), 
                 AllowUserToAddRows = true,
                 AllowUserToDeleteRows = true,
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
-                RowHeadersVisible = false
+                RowHeadersVisible = false,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect 
             };
 
             typeof(DataGridView).InvokeMember("DoubleBuffered", 
@@ -224,8 +225,8 @@ namespace MEPTools.MEPGroupTag
 
             dgvExtra.DataError += (s, e) => { e.ThrowException = false; e.Cancel = true; };
             
-            // 定义标准 5 列
-            var colPosition = new DataGridViewComboBoxColumn { Name = "GroupIndex", HeaderText = "插入位置", FillWeight = 15 };
+            // 👇 核心：加上 ValueType = typeof(string)，防止下拉框取值失败 👇
+            var colPosition = new DataGridViewComboBoxColumn { Name = "GroupIndex", HeaderText = "插入位置", FillWeight = 15, ValueType = typeof(string) };
             var positions = new List<string> { 
                 "每一组前", "每一组后",
                 "第1组前", "第1组后", "第2组前", "第2组后", "第3组前", "第3组后", "第4组前", "第4组后", "第5组前", "第5组后",
@@ -236,39 +237,109 @@ namespace MEPTools.MEPGroupTag
 
             dgvExtra.Columns.Add(new DataGridViewTextBoxColumn { Name = "TagText", HeaderText = "生成的文字(如T1)", FillWeight = 10 });
             
-            // 👇 后三列改为纯文本列，双击弹窗搜索 👇
             dgvExtra.Columns.Add(new DataGridViewTextBoxColumn { Name = "DuctTagSym", HeaderText = "DUCT Tag 族", FillWeight = 25 });
             dgvExtra.Columns.Add(new DataGridViewTextBoxColumn { Name = "PipeTagSym", HeaderText = "PIPE Tag 族", FillWeight = 25 });
             dgvExtra.Columns.Add(new DataGridViewTextBoxColumn { Name = "TrayTagSym", HeaderText = "CABLE TRAY Tag 族", FillWeight = 25 });
             
-            // 绑定双击事件
             dgvExtra.CellDoubleClick += DgvExtra_CellDoubleClick;
 
             this.Controls.Add(dgvExtra);
-            y += 360;
+            y += 330;
 
-            // 底部按钮
-            btnImport = new Button { Text = "输入配置", Location = new Point(labelX, y), Width = 90, Height = 32 };
+            btnInsert = new Button { Text = "插入新行", Location = new Point(labelX, y), Width = 80, Height = 28, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            btnInsert.Click += BtnInsert_Click;
+            this.Controls.Add(btnInsert);
+
+            btnUp = new Button { Text = "上移 ↑", Location = new Point(labelX + 85, y), Width = 70, Height = 28, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            btnUp.Click += BtnUp_Click;
+            this.Controls.Add(btnUp);
+
+            btnDown = new Button { Text = "下移 ↓", Location = new Point(labelX + 160, y), Width = 70, Height = 28, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            btnDown.Click += BtnDown_Click;
+            this.Controls.Add(btnDown);
+
+            btnImport = new Button { Text = "输入配置", Location = new Point(labelX + 250, y), Width = 80, Height = 28, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
             btnImport.Click += BtnImport_Click;
             this.Controls.Add(btnImport);
 
-            btnExport = new Button { Text = "输出配置", Location = new Point(labelX + 100, y), Width = 90, Height = 32 };
+            btnExport = new Button { Text = "输出配置", Location = new Point(labelX + 340, y), Width = 80, Height = 28, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
             btnExport.Click += BtnExport_Click;
             this.Controls.Add(btnExport);
 
-            btnClear = new Button { Text = "清空配置", Location = new Point(labelX + 200, y), Width = 90, Height = 32, ForeColor = Color.Red };
+            btnClear = new Button { Text = "清空配置", Location = new Point(labelX + 430, y), Width = 80, Height = 28, ForeColor = Color.Red, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
             btnClear.Click += BtnClear_Click;
             this.Controls.Add(btnClear);
 
-            btnOk = new Button { Text = "保存设置 (空格)", Location = new Point(810, y), Width = 120, Height = 32, DialogResult = DialogResult.OK };
+            btnOk = new Button { Text = "保存设置 (空格)", Location = new Point(810, y), Width = 120, Height = 28, DialogResult = DialogResult.OK, Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
             btnOk.Click += BtnOk_Click;
             this.AcceptButton = btnOk;
             this.Controls.Add(btnOk);
+
+            this.Resize += (s, e) => {
+                int buttonAreaHeight = 52; 
+                int newY = this.ClientSize.Height - buttonAreaHeight;
+                
+                btnInsert.Top = newY;
+                btnUp.Top = newY;
+                btnDown.Top = newY;
+                btnImport.Top = newY;
+                btnExport.Top = newY;
+                btnClear.Top = newY;
+                btnOk.Top = newY;
+                
+                dgvExtra.Height = newY - dgvExtra.Top - 15; 
+            };
         }
 
-        /// <summary>
-        /// 双击族列的单元格，弹出超爽的搜索窗口
-        /// </summary>
+        private void BtnInsert_Click(object sender, EventArgs e)
+        {
+            // 👇 插入前强制提交当前正在编辑的单元格数据 👇
+            dgvExtra.EndEdit();
+
+            int index = dgvExtra.CurrentRow?.Index ?? dgvExtra.Rows.Count;
+            if (index >= dgvExtra.Rows.Count) index = Math.Max(0, dgvExtra.Rows.Count - 1);
+            
+            dgvExtra.Rows.Insert(index, new object[] { "", "", "", "", "" });
+            dgvExtra.CurrentCell = dgvExtra.Rows[index].Cells[0];
+        }
+
+        private void BtnUp_Click(object sender, EventArgs e)
+        {
+            // 👇 移动前强制提交 👇
+            dgvExtra.EndEdit();
+
+            if (dgvExtra.CurrentRow == null || dgvExtra.CurrentRow.Index <= 0) return;
+            
+            int index = dgvExtra.CurrentRow.Index;
+            SwapRows(index, index - 1);
+            dgvExtra.CurrentCell = dgvExtra.Rows[index - 1].Cells[0];
+        }
+
+        private void BtnDown_Click(object sender, EventArgs e)
+        {
+            // 👇 移动前强制提交 👇
+            dgvExtra.EndEdit();
+
+            if (dgvExtra.CurrentRow == null || dgvExtra.CurrentRow.Index >= dgvExtra.Rows.Count - 1) return;
+            if (dgvExtra.CurrentRow.IsNewRow) return; 
+            
+            int index = dgvExtra.CurrentRow.Index;
+            SwapRows(index, index + 1);
+            dgvExtra.CurrentCell = dgvExtra.Rows[index + 1].Cells[0];
+        }
+
+        private void SwapRows(int row1, int row2)
+        {
+            if (row1 < 0 || row2 < 0 || row1 >= dgvExtra.Rows.Count || row2 >= dgvExtra.Rows.Count) return;
+
+            for (int i = 0; i < dgvExtra.Columns.Count; i++)
+            {
+                object temp = dgvExtra.Rows[row1].Cells[i].Value;
+                dgvExtra.Rows[row1].Cells[i].Value = dgvExtra.Rows[row2].Cells[i].Value;
+                dgvExtra.Rows[row2].Cells[i].Value = temp;
+            }
+        }
+
         private void DgvExtra_CellDoubleClick(object sender, DataGridViewCellEventArgs e)
         {
             if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
@@ -287,6 +358,7 @@ namespace MEPTools.MEPGroupTag
                     if (searchForm.ShowDialog() == DialogResult.OK)
                     {
                         dgvExtra.Rows[e.RowIndex].Cells[e.ColumnIndex].Value = searchForm.SelectedResult;
+                        dgvExtra.CommitEdit(DataGridViewDataErrorContexts.Commit);
                     }
                 }
             }
@@ -389,14 +461,14 @@ namespace MEPTools.MEPGroupTag
         {
             CollectDataFromUI();
             _config.Save();
-            InfoCenterTip.Show("配置已保存到本地全局设置。");
+            InfoCenterTip.Show($"配置已保存！(共 {_config.ExtraRules.Count} 条附加行规则)");
         }
 
         private void CollectDataFromUI()
         {
+            // 👇 核心修复：去掉导致焦点丢失的 CurrentCell = null 👇
             dgvExtra.EndEdit();
             dgvExtra.CommitEdit(DataGridViewDataErrorContexts.Commit);
-            dgvExtra.CurrentCell = null; 
 
             _config.GroupToleranceMM = (double)nudTolerance.Value;
             _config.LineSpacingMM = (double)nudLineSpacing.Value;
@@ -437,9 +509,6 @@ namespace MEPTools.MEPGroupTag
         }
     }
 
-    /// <summary>
-    /// 专属的搜索弹窗，超宽超大
-    /// </summary>
     public class TagSearchForm : Form
     {
         public string SelectedResult { get; private set; }
@@ -473,7 +542,6 @@ namespace MEPTools.MEPGroupTag
             this.Controls.Add(txtSearch);
             this.Controls.Add(listBox);
 
-            // 初始化列表
             listBox.Items.AddRange(_allData.ToArray());
         }
 

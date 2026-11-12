@@ -44,10 +44,10 @@ namespace MEPTools.Shared
             new KeyValuePair<string,string>("MEPAlignment.HorizontalEps",      "1e-6"),
             new KeyValuePair<string,string>("MEPAlignment.AlignEps",           "1e-4"),
 
-            // 👇 新增的 TagGroup 排版配置项 👇
-            new KeyValuePair<string,string>("TagGroup.LineSpacing",            "300.0"),
-            new KeyValuePair<string,string>("TagGroup.BlankLines",             "2"),
             new KeyValuePair<string,string>("TagGroup.Tolerance",              "25.0"),
+            new KeyValuePair<string,string>("TagGroup.LineSpacing",            "200.0"),
+            new KeyValuePair<string,string>("TagGroup.BlankLines",             "2"),
+            new KeyValuePair<string,string>("TagGroup.ExtraRules",             ""),
         };
 
         private static void EnsureLoaded()
@@ -68,8 +68,9 @@ namespace MEPTools.Shared
             string dir = null;
             try
             {
-                string asmPath = Assembly.GetExecutingAssembly().Location;
-                if (!string.IsNullOrEmpty(asmPath)) dir = Path.GetDirectoryName(asmPath);
+                // 👇 核心修复：强制写入到 LocalAppData，避开 C 盘 Program Files 权限问题 👇
+                dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MEPTools");
+                if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
             }
             catch { }
 
@@ -80,15 +81,10 @@ namespace MEPTools.Shared
             }
 
             _configPath = Path.Combine(dir, "MEPTools.config");
-            string legacyPath = Path.Combine(dir, "TagAlignLeft.config");
 
             if (File.Exists(_configPath))
             {
                 LoadKeyValueFile(_configPath, dict);
-            }
-            else if (File.Exists(legacyPath))
-            {
-                TryLoadLegacyRowSpacing(legacyPath, dict);
             }
             else
             {
@@ -111,24 +107,6 @@ namespace MEPTools.Shared
                     string key = l.Substring(0, idx).Trim();
                     string val = l.Substring(idx + 1).Trim();
                     if (key.Length > 0) dict[key] = val;
-                }
-            }
-            catch { }
-        }
-
-        private static void TryLoadLegacyRowSpacing(string path, Dictionary<string, string> dict)
-        {
-            try
-            {
-                foreach (var line in File.ReadAllLines(path))
-                {
-                    string t = line.Trim();
-                    if (t.Length == 0 || t.StartsWith("//")) continue;
-                    if (double.TryParse(t, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) && v > 0)
-                    {
-                        dict["TagAlign.RowSpacing"] = t;
-                        break;
-                    }
                 }
             }
             catch { }
@@ -213,7 +191,6 @@ namespace MEPTools.Shared
                     sb.AppendLine("# =================================================");
                     sb.AppendLine();
                     
-                    // 重要修复：遍历所有内存中的配置（包含动态新增的），而不是只遍历 Defaults
                     foreach (var kv in _values)
                     {
                         sb.AppendLine(kv.Key + "=" + kv.Value);
