@@ -164,7 +164,7 @@ namespace MEPTools.MEPGroupTag
         private NumericUpDown nudTolerance, nudLineSpacing, nudBlankLines;
         private DataGridView dgvExtra;
         private Button btnOk, btnImport, btnExport, btnClear;
-        private Button btnInsert, btnUp, btnDown;
+        private Button btnInsert, btnUp, btnDown, btnDeleteRow; // 👈 新增删除按钮
 
         private List<string> _ductTagsAll = new List<string>();
         private List<string> _pipeTagsAll = new List<string>();
@@ -225,7 +225,6 @@ namespace MEPTools.MEPGroupTag
 
             dgvExtra.DataError += (s, e) => { e.ThrowException = false; e.Cancel = true; };
             
-            // 👇 核心：加上 ValueType = typeof(string)，防止下拉框取值失败 👇
             var colPosition = new DataGridViewComboBoxColumn { Name = "GroupIndex", HeaderText = "插入位置", FillWeight = 15, ValueType = typeof(string) };
             var positions = new List<string> { 
                 "每一组前", "每一组后",
@@ -243,6 +242,14 @@ namespace MEPTools.MEPGroupTag
             
             dgvExtra.CellDoubleClick += DgvExtra_CellDoubleClick;
 
+            // 👇 增加键盘 Delete 键快捷删除 👇
+            dgvExtra.KeyDown += (s, e) => {
+                if (e.KeyCode == Keys.Delete)
+                {
+                    BtnDeleteRow_Click(s, e);
+                }
+            };
+
             this.Controls.Add(dgvExtra);
             y += 330;
 
@@ -258,15 +265,20 @@ namespace MEPTools.MEPGroupTag
             btnDown.Click += BtnDown_Click;
             this.Controls.Add(btnDown);
 
-            btnImport = new Button { Text = "输入配置", Location = new Point(labelX + 250, y), Width = 80, Height = 28, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            // 👇 新增删除按钮，并调整后续按钮的 X 坐标 👇
+            btnDeleteRow = new Button { Text = "删除选中行", Location = new Point(labelX + 235, y), Width = 85, Height = 28, ForeColor = Color.Red, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            btnDeleteRow.Click += BtnDeleteRow_Click;
+            this.Controls.Add(btnDeleteRow);
+
+            btnImport = new Button { Text = "输入配置", Location = new Point(labelX + 335, y), Width = 80, Height = 28, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
             btnImport.Click += BtnImport_Click;
             this.Controls.Add(btnImport);
 
-            btnExport = new Button { Text = "输出配置", Location = new Point(labelX + 340, y), Width = 80, Height = 28, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            btnExport = new Button { Text = "输出配置", Location = new Point(labelX + 425, y), Width = 80, Height = 28, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
             btnExport.Click += BtnExport_Click;
             this.Controls.Add(btnExport);
 
-            btnClear = new Button { Text = "清空配置", Location = new Point(labelX + 430, y), Width = 80, Height = 28, ForeColor = Color.Red, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            btnClear = new Button { Text = "清空配置", Location = new Point(labelX + 515, y), Width = 80, Height = 28, ForeColor = Color.Red, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
             btnClear.Click += BtnClear_Click;
             this.Controls.Add(btnClear);
 
@@ -282,6 +294,7 @@ namespace MEPTools.MEPGroupTag
                 btnInsert.Top = newY;
                 btnUp.Top = newY;
                 btnDown.Top = newY;
+                btnDeleteRow.Top = newY;
                 btnImport.Top = newY;
                 btnExport.Top = newY;
                 btnClear.Top = newY;
@@ -291,11 +304,11 @@ namespace MEPTools.MEPGroupTag
             };
         }
 
+        // ================= 插入、删除与排序逻辑 =================
+
         private void BtnInsert_Click(object sender, EventArgs e)
         {
-            // 👇 插入前强制提交当前正在编辑的单元格数据 👇
             dgvExtra.EndEdit();
-
             int index = dgvExtra.CurrentRow?.Index ?? dgvExtra.Rows.Count;
             if (index >= dgvExtra.Rows.Count) index = Math.Max(0, dgvExtra.Rows.Count - 1);
             
@@ -303,11 +316,27 @@ namespace MEPTools.MEPGroupTag
             dgvExtra.CurrentCell = dgvExtra.Rows[index].Cells[0];
         }
 
+        private void BtnDeleteRow_Click(object sender, EventArgs e)
+        {
+            dgvExtra.EndEdit(); // 停止当前编辑
+            
+            if (dgvExtra.CurrentRow != null && !dgvExtra.CurrentRow.IsNewRow)
+            {
+                int index = dgvExtra.CurrentRow.Index;
+                dgvExtra.Rows.RemoveAt(index);
+                
+                // 删完后保持选中状态
+                if (dgvExtra.Rows.Count > 0)
+                {
+                    int nextIndex = Math.Min(index, dgvExtra.Rows.Count - 1);
+                    dgvExtra.CurrentCell = dgvExtra.Rows[nextIndex].Cells[0];
+                }
+            }
+        }
+
         private void BtnUp_Click(object sender, EventArgs e)
         {
-            // 👇 移动前强制提交 👇
             dgvExtra.EndEdit();
-
             if (dgvExtra.CurrentRow == null || dgvExtra.CurrentRow.Index <= 0) return;
             
             int index = dgvExtra.CurrentRow.Index;
@@ -317,9 +346,7 @@ namespace MEPTools.MEPGroupTag
 
         private void BtnDown_Click(object sender, EventArgs e)
         {
-            // 👇 移动前强制提交 👇
             dgvExtra.EndEdit();
-
             if (dgvExtra.CurrentRow == null || dgvExtra.CurrentRow.Index >= dgvExtra.Rows.Count - 1) return;
             if (dgvExtra.CurrentRow.IsNewRow) return; 
             
@@ -339,6 +366,8 @@ namespace MEPTools.MEPGroupTag
                 dgvExtra.Rows[row2].Cells[i].Value = temp;
             }
         }
+
+        // ================= 其他原有逻辑 =================
 
         private void DgvExtra_CellDoubleClick(object sender, DataGridViewCellEventArgs e)
         {
@@ -466,7 +495,6 @@ namespace MEPTools.MEPGroupTag
 
         private void CollectDataFromUI()
         {
-            // 👇 核心修复：去掉导致焦点丢失的 CurrentCell = null 👇
             dgvExtra.EndEdit();
             dgvExtra.CommitEdit(DataGridViewDataErrorContexts.Commit);
 
