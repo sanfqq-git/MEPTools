@@ -106,7 +106,8 @@ namespace MEPTools.MEPHighLowUpDown
                 double angleFactor = Math.Tan(rad / 2.0);
                 
                 // 将偏移量作用于打断点（沿翻弯方向）
-                offsetAmount = -deltaZ * sign * angleFactor;
+                offsetAmount = -deltaZ * sign * angleFactor * Math.Sign(h_offset_ft);
+
                 p0 = p0 + dir * offsetAmount;
             }
 
