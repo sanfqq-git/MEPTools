@@ -1,15 +1,16 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using System.Windows.Forms;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
 using MEPTools.Shared;
-using MEPTools.MEPConnector.Planar.Core; // 【修复】更新为新的 Core 命名空间
+using MEPTools.MEPConnector.Spatial.Core;
 
-namespace MEPTools.MEPConnector.Planar.Commands // 【修复】更新为新的 Commands 命名空间
+namespace MEPTools.MEPConnector.Spatial.Commands
 {
     [Transaction(TransactionMode.Manual)]
     public class CornerCommand : IExternalCommand
@@ -84,7 +85,7 @@ namespace MEPTools.MEPConnector.Planar.Commands // 【修复】更新为新的 C
                 return Result.Cancelled;
             }
 
-            var pairs = PlanarConnectorCalculator.MatchPairs(aList, bList, true);
+            var pairs = ConnectorCalculator.MatchPairs(aList, bList, true);
 
             if (pairs.Count == 0)
             {
@@ -92,10 +93,73 @@ namespace MEPTools.MEPConnector.Planar.Commands // 【修复】更新为新的 C
                 return Result.Cancelled;
             }
 
+            // ---------- 4.5 空间错开预检（不改判定逻辑，仅采集信息）----------
+            // 说明：
+            //   · 仅处理 IsPlanarPath = true 的对（平面求交路径）。立管 × 水平管走 3D 路径，
+            //     ComputeCorner3D 已有自身 50mm 容差，不参与本流程。
+            //   · 1mm 仅作为浮点噪声过滤，不做工程分级。
+            //   · 全部风险对汇总后一次弹窗，用户全权决定是否生成斜管。
+            const double noiseMm = 1.0;
+            var riskyPairs = new List<ConnectorPair>();
+            double minGapMm = double.MaxValue, maxGapMm = 0;
+
+            foreach (var pair in pairs)
+            {
+                Element elA = doc.GetElement(pair.AId);
+                Element elB = doc.GetElement(pair.BId);
+                if (elA == null || elB == null) continue;
+
+                var g = ConnectorCalculator.ComputeCornerAuto(elA, elB);
+                if (!g.IsValid || !g.IsPlanarPath) continue;
+
+                double gapMm = g.SpatialGap * ConnectorCalculator.FtToMm;
+                if (gapMm <= noiseMm) continue;
+
+                pair.SpatialGapMm = gapMm;
+                riskyPairs.Add(pair);
+                if (gapMm < minGapMm) minGapMm = gapMm;
+                if (gapMm > maxGapMm) maxGapMm = gapMm;
+            }
+
+            // ---------- 4.6 汇总弹窗（一次）----------
+            bool allowSlant = false;
+            if (riskyPairs.Count > 0)
+            {
+                var sb = new StringBuilder();
+                foreach (var p in riskyPairs.OrderByDescending(x => x.SpatialGapMm))
+                    sb.AppendLine($"  {p.AId} ↔ {p.BId}    错开 {p.SpatialGapMm:F1} mm");
+
+                var td = new TaskDialog("检测到空间错开");
+                td.MainInstruction =
+                    $"检测到 {riskyPairs.Count} 对元素 XY 投影相交但空间错开";
+                td.MainContent =
+                    $"错开量范围：{minGapMm:F1} ~ {maxGapMm:F1} mm\n\n" +
+                    "直接连接会使 B 组管道产生倾斜（变成带坡度的斜管），" +
+                    "并可能改写其坡度参数，影响水力计算及已连接构件。\n\n" +
+                    "· 是：对本批全部风险对生成斜管连接\n" +
+                    "· 否：跳过这些风险对，其余正常对继续执行\n" +
+                    "· 关闭：取消整个操作";
+                td.ExpandedContent = sb.ToString();
+                td.CommonButtons = TaskDialogCommonButtons.Yes | TaskDialogCommonButtons.No;
+                td.DefaultButton = TaskDialogResult.No;   // 默认否，防误触
+
+                var r = td.Show();
+                if (r == TaskDialogResult.Cancel)          // 点 X 关闭
+                {
+                    InfoCenterTip.Show("已取消整个转角连接操作。");
+                    return Result.Cancelled;
+                }
+                allowSlant = (r == TaskDialogResult.Yes);
+            }
+
             // ---------- 5. 执行 ----------
             MEPLogger.Instance.StartSession("MEP 转角连接");
-            var service = new PlanarConnectorService();
-            int success = 0, fail = 0;
+            var service = new ConnectorService();
+            int success = 0, fail = 0, skipped = 0;
+
+            var riskyKey = new HashSet<string>(
+                //riskyPairs.Select(p => $"{p.AId.Value}_{p.BId.Value}"));
+		riskyPairs.Select(p => $"{p.AId}_{p.BId}"));
 
             using (Transaction trans = new Transaction(doc, "MEP 转角连接"))
             {
@@ -104,8 +168,26 @@ namespace MEPTools.MEPConnector.Planar.Commands // 【修复】更新为新的 C
                 {
                     Element elA = doc.GetElement(pair.AId);
                     Element elB = doc.GetElement(pair.BId);
+                    if (elA == null || elB == null) { fail++; continue; }
 
-                    if (!PlanarConnectorCalculator.IsSameType(elA, elB))
+                    //bool isRisky = riskyKey.Contains($"{pair.AId.Value}_{pair.BId.Value}");
+		    bool isRisky = riskyKey.Contains($"{pair.AId}_{pair.BId}");
+
+                    if (isRisky && !allowSlant)
+                    {
+                        MEPLogger.Instance.AppendLine(
+                            $"→ 跳过 {pair.AId} & {pair.BId}：用户选择不生成斜管（错开 {pair.SpatialGapMm:F1}mm）");
+                        skipped++;
+                        continue;
+                    }
+
+                    if (isRisky)
+                    {
+                        MEPLogger.Instance.AppendLine(
+                            $"⚠ 用户授权生成斜管：{pair.AId} & {pair.BId}，错开 {pair.SpatialGapMm:F1}mm");
+                    }
+
+                    if (!ConnectorCalculator.IsSameType(elA, elB))
                     {
                         MEPLogger.Instance.AppendLine($"✗ 跳过 {elA.Id} & {elB.Id}: 元素类型不同");
                         fail++;
@@ -124,12 +206,18 @@ namespace MEPTools.MEPConnector.Planar.Commands // 【修复】更新为新的 C
                 trans.Commit();
             }
 
-            MEPLogger.Instance.EndSession($"成功 {success} 对，失败 {fail} 对");
+            MEPLogger.Instance.EndSession(
+                $"成功 {success} 对，失败 {fail} 对，跳过 {skipped} 对");
 
             // ---------- 6. 结果用 InfoCenter 显示 ----------
-            string hint = (success == 0 && fail > 0)
-                ? "（若两管平行错开，请用【共线连接】命令）"
-                : "";
+            string hint;
+            if (skipped > 0)
+                hint = $"（跳过 {skipped} 对空间错开）";
+            else if (success == 0 && fail > 0)
+                hint = "（若两管平行错开，请用【共线连接】命令）";
+            else
+                hint = "";
+
             InfoCenterTip.Show($"转角连接完成：成功 {success} 对，失败 {fail} 对{hint}");
 
             return Result.Succeeded;
@@ -137,13 +225,13 @@ namespace MEPTools.MEPConnector.Planar.Commands // 【修复】更新为新的 C
 
         private bool IsSystemTypeCompatible(Element a, Element b)
         {
-            var ta = PlanarConnectorCalculator.GetElementType(a);
-            var tb = PlanarConnectorCalculator.GetElementType(b);
+            var ta = ConnectorCalculator.GetElementType(a);
+            var tb = ConnectorCalculator.GetElementType(b);
 
             if (ta == MEPElementType.CableTray) return true;
 
-            var sysA = PlanarConnectorCalculator.GetSystemTypeId(a, ta);
-            var sysB = PlanarConnectorCalculator.GetSystemTypeId(b, tb);
+            var sysA = ConnectorCalculator.GetSystemTypeId(a, ta);
+            var sysB = ConnectorCalculator.GetSystemTypeId(b, tb);
             return sysA == sysB;
         }
     }

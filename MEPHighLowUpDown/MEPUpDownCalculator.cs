@@ -22,6 +22,10 @@ namespace MEPTools.MEPHighLowUpDown
         public double AvailableSpace { get; set; }
         public bool IsValid { get; set; }
         public string ErrorMessage { get; set; }
+        
+        // 用于记录高度差与打断点偏移量
+        public double DeltaZ { get; set; }
+        public double OffsetAmount { get; set; }
     }
 
     public static class MEPUpDownCalculator
@@ -40,7 +44,7 @@ namespace MEPTools.MEPHighLowUpDown
         }
 
         public static UpDownGeometry ComputeLift(Curve curve, XYZ breakPt, XYZ sidePt,
-            double h_offset_ft, double angleDeg, out string errorMsg)
+            double h_offset_ft, double angleDeg, double refZ, out string errorMsg)
         {
             errorMsg = null;
             var result = new UpDownGeometry { IsValid = false };
@@ -84,11 +88,32 @@ namespace MEPTools.MEPHighLowUpDown
             }
 
             bool liftRight = (sidePt - p0).DotProduct(dir) >= 0;
-            double absH = Math.Abs(h_offset_ft);
             double sign = liftRight ? 1.0 : -1.0;
+            
+            // ★ 提前计算 rad，确保后续代码都能访问
+            double rad = angleDeg * Math.PI / 180.0;
+
+            // ★ 多层错开逻辑：根据参考标高 refZ 计算高度差
+            double deltaZ = p0.Z - refZ;
+            double offsetAmount = 0;
+            
+            // 仅对水平管段应用错开逻辑（避免倾斜管段偏离）
+            if (Math.Abs(dir.Z) < 1e-4 && Math.Abs(deltaZ) > 1e-6)
+            {
+                // 统一公式：tan(A/2)
+                // 对于 45°，tan(22.5°) ≈ 0.414，下层打断点向翻弯方向移动 0.414*层高，使 D2=D1
+                // 对于 90°，tan(45°) = 1，下层打断点向翻弯方向移动 1*层高，垂直段完全错开
+                double angleFactor = Math.Tan(rad / 2.0);
+                
+                // 将偏移量作用于打断点（沿翻弯方向）
+                offsetAmount = -deltaZ * sign * angleFactor;
+                p0 = p0 + dir * offsetAmount;
+            }
 
             XYZ curveStart = curve.GetEndPoint(0);
             XYZ curveEnd = curve.GetEndPoint(1);
+            
+            // ★ 重新计算偏移后的距离
             double distFromStart = (p0 - curveStart).DotProduct(dir);
             double distToEnd = (curveEnd - p0).DotProduct(dir);
 
@@ -96,15 +121,15 @@ namespace MEPTools.MEPHighLowUpDown
             double availableSpace = liftRight ? distToEnd : distFromStart;
 
             // 沿管线方向的水平偏移：|h| / tan(θ)
-            // 45° → |h|；90° → 0（纯垂直过渡）；小角度 → 水平很长
-            double rad = angleDeg * Math.PI / 180.0;
             double horizOffset = angleDeg >= 89.999
                 ? 0.0
-                : absH / Math.Tan(rad);
+                : Math.Abs(h_offset_ft) / Math.Tan(rad);
 
             result.DistFromStart = distFromStart;
             result.DistToEnd = distToEnd;
             result.AvailableSpace = availableSpace;
+            result.DeltaZ = deltaZ;
+            result.OffsetAmount = offsetAmount;
 
             if (availableSpace < horizOffset - tolFt)
             {

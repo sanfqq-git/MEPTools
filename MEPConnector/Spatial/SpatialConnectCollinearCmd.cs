@@ -7,9 +7,9 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
 using MEPTools.Shared;
-using MEPTools.MEPConnector.Planar.Core;
+using MEPTools.MEPConnector.Spatial.Core;
 
-namespace MEPTools.MEPConnector.Planar.Commands
+namespace MEPTools.MEPConnector.Spatial.Commands
 {
     [Transaction(TransactionMode.Manual)]
     public class CollinearCommand : IExternalCommand
@@ -79,7 +79,7 @@ namespace MEPTools.MEPConnector.Planar.Commands
                 return Result.Cancelled;
             }
 
-            var pairs = PlanarConnectorCalculator.MatchPairs(aList, bList, false);
+            var pairs = ConnectorCalculator.MatchPairs(aList, bList, false);
 
             if (pairs.Count == 0)
             {
@@ -98,8 +98,8 @@ namespace MEPTools.MEPConnector.Planar.Commands
                 Element elB = doc.GetElement(pair.BId);
                 if (elA == null || elB == null) continue;
 
-                double dev = PlanarConnectorCalculator.GetHorizontalDeviation(elA, elB);
-                if (dev != double.MaxValue && dev * PlanarConnectorCalculator.FtToMm > minDeviationMm)
+                double dev = ConnectorCalculator.GetHorizontalDeviation(elA, elB);
+                if (dev != double.MaxValue && dev * ConnectorCalculator.FtToMm > minDeviationMm)
                 {
                     nonCollinearCount++;
                     pairsWithDeviation.Add(pair);
@@ -125,7 +125,7 @@ namespace MEPTools.MEPConnector.Planar.Commands
 
             // ---------- 5. 执行 ----------
             MEPLogger.Instance.StartSession("MEP 共线延长");
-            var service = new PlanarConnectorService();
+            var service = new ConnectorService();
             int success = 0, fail = 0;
 
             using (Transaction trans = new Transaction(doc, "MEP 共线延长"))
@@ -166,7 +166,7 @@ namespace MEPTools.MEPConnector.Planar.Commands
                         continue;
                     }
 
-                    if (!PlanarConnectorCalculator.IsSameType(elA, elB))
+                    if (!ConnectorCalculator.IsSameType(elA, elB))
                     {
                         MEPLogger.Instance.AppendLine($"✗ 跳过 {elA.Id} & {elB.Id}: 元素类型不同");
                         fail++;
@@ -187,7 +187,6 @@ namespace MEPTools.MEPConnector.Planar.Commands
                 : "";
             InfoCenterTip.Show($"共线连接完成：成功 {success} 对，失败 {fail} 对{hint}");
 
-            // 【新增】失败详情用 TaskDialog 展开，让用户知道"为什么没合上"
             if (fail > 0)
             {
                 var td = new TaskDialog("MEP 共线连接结果");

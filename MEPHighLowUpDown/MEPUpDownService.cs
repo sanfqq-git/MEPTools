@@ -7,7 +7,7 @@ using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
 using MEPTools.Shared;
-using MEPTools.MEPConnector.HighLow; // 引入 HighLow 的命名空间
+using MEPTools.MEPConnector.HighLow;
 
 namespace MEPTools.MEPHighLowUpDown
 {
@@ -21,7 +21,7 @@ namespace MEPTools.MEPHighLowUpDown
         }
 
         public bool ProcessSingleElement(Document doc, ElementId elemId,
-            XYZ breakPt, XYZ sidePt, double h_offset_ft, double angleDeg)
+            XYZ breakPt, XYZ sidePt, double h_offset_ft, double angleDeg, double refZ)
         {
             Element elem = doc.GetElement(elemId);
             if (elem == null || !elem.IsValidObject)
@@ -47,11 +47,19 @@ namespace MEPTools.MEPHighLowUpDown
 
             string geomErr;
             UpDownGeometry geom = MEPUpDownCalculator.ComputeLift(
-                curve, breakPt, sidePt, h_offset_ft, angleDeg, out geomErr);
+                curve, breakPt, sidePt, h_offset_ft, angleDeg, refZ, out geomErr);
+                
             if (!geom.IsValid)
             {
                 _log.AppendLine($"✗ {geomErr}");
                 return false;
+            }
+
+            // ★ 打印多层错开计算日志
+            if (Math.Abs(geom.DeltaZ) > 1e-6)
+            {
+                _log.AppendLine($"当前管高度差 = {geom.DeltaZ * MEPUpDownCalculator.FtToMm:F1} mm");
+                _log.AppendLine($"打断点沿管线错开 = {geom.OffsetAmount * MEPUpDownCalculator.FtToMm:F1} mm");
             }
 
             _log.AppendLine($"连接角度: {angleDeg:F2}°");
@@ -259,28 +267,23 @@ namespace MEPTools.MEPHighLowUpDown
                 newHorizEnd = geom.P1;
             }
 
-            // 1. 在打断点获取保留段的截面方向，用于后续垂直过渡段的旋转对齐
             XYZ targetBasisX = null;
             Connector ca = GetConnectorAtPoint(keepSeg, geom.P0);
             if (ca != null) targetBasisX = new XYZ(ca.CoordinateSystem.BasisX.X, ca.CoordinateSystem.BasisX.Y, 0).Normalize();
 
-            // 2. 参考 HighLow：不删除重建，而是直接修改原线段的 LocationCurve，并强制断开连接
             HighLowMEPAligner.DisconnectConnectors(delSeg);
             delLc.Curve = Line.CreateBound(newHorizStart, newHorizEnd);
             doc.Regenerate();
 
-            // 3. 创建过渡段
             Element ramp = CreateMEPCurve(doc, elemType, typeId, levelId, systemTypeId,
                 diameter, width, height, geom.P0, geom.P1);
             if (ramp == null) throw new InvalidOperationException("过渡段创建失败");
 
-            // 4. 参考 HighLow：如果是垂直段，必须旋转以匹配管件的 BasisX 截面方向
             if (targetBasisX != null)
                 AlignVerticalMEP(doc, ramp, geom.P0, targetBasisX);
 
             doc.Regenerate();
 
-            // 5. 重新生成弯头（不再强制设置 Angle 参数）
             if (geom.LiftRight)
             {
                 TryCreateElbow(doc, keepSegId, ramp.Id, geom.P0, "弯头1（原段-过渡段）");
@@ -327,14 +330,11 @@ namespace MEPTools.MEPHighLowUpDown
             return el;
         }
 
-        /// <summary>
-        /// 参考 HighLow 中垂直过渡段的处理方案，通过旋转使风管/线槽截面匹配原管
-        /// </summary>
         private void AlignVerticalMEP(Document doc, Element el, XYZ s, XYZ targetBasisX)
         {
             if (el == null || targetBasisX == null) return;
             var line = (el.Location as LocationCurve)?.Curve as Line;
-            if (line == null || Math.Abs(line.Direction.Z) <= 0.99) return; // 只有垂直段才处理
+            if (line == null || Math.Abs(line.Direction.Z) <= 0.99) return;
 
             doc.Regenerate();
             Connector cr = GetConnectorAtPoint(el, s);
@@ -373,7 +373,6 @@ namespace MEPTools.MEPHighLowUpDown
             XYZ trayStart = lc.Curve.GetEndPoint(0);
             XYZ trayEnd = lc.Curve.GetEndPoint(1);
 
-            // 记录原线槽的截面方向
             XYZ targetBasisX = null;
             ConnectorManager cm = GetConnectorManager(tray);
             if (cm != null)
@@ -406,7 +405,6 @@ namespace MEPTools.MEPHighLowUpDown
 
             doc.Regenerate();
 
-            // 对齐垂直过渡段
             if (verticalSeg != null)
             {
                 XYZ jointPt = geom.LiftRight ? geom.P0 : geom.P1;
@@ -451,7 +449,6 @@ namespace MEPTools.MEPHighLowUpDown
             return null;
         }
 
-        // 移除了强制设置角度参数的逻辑，因为标准弯头不需要手动设角度，强设会导致族拉伸和管件错乱
         private bool TryCreateElbow(Document doc, ElementId idA, ElementId idB, XYZ atPt, string tag)
         {
             Element elA = doc.GetElement(idA);
@@ -519,9 +516,6 @@ namespace MEPTools.MEPHighLowUpDown
             try { c.ConnectTo(externalConn); } catch { }
         }
 
-        /// <summary>
-        /// 同步移动与抬升端相连的其他设备/管线（保证在同一高度）
-        /// </summary>
         private void SyncMoveConnectedElements(Document doc, List<ElementId> connectedIds, XYZ originalLiftPt, double h_offset_ft)
         {
             XYZ offsetVec = XYZ.BasisZ * h_offset_ft;
@@ -557,9 +551,6 @@ namespace MEPTools.MEPHighLowUpDown
             doc.Regenerate();
         }
 
-        /// <summary>
-        /// 在抬升端重新连接被同步移动的元素，保持系统连通性
-        /// </summary>
         private void ReconnectAtLiftedEnd(Document doc, ElementId liftedElemId, XYZ expectedPt, List<ElementId> movedIds)
         {
             if (liftedElemId == ElementId.InvalidElementId) return;

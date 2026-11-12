@@ -24,13 +24,8 @@ namespace MEPTools.MEPHighLowUpDown
     {
         private readonly StringBuilder debugInfo = new StringBuilder();
 
-        /// <summary>命令标题（用于日志、事务名、对话框标题）</summary>
         protected abstract string Title { get; }
-
-        /// <summary>获取本次执行的角度（度）。返回 false 表示用户取消。</summary>
         protected abstract bool TryGetAngleDeg(out double angleDeg);
-
-        /// <summary>偏移量输入框的默认值</summary>
         protected virtual string DefaultOffsetInput => "200";
 
         protected void Log(string text)
@@ -136,8 +131,18 @@ namespace MEPTools.MEPHighLowUpDown
 
                 XYZ sidePt = ref2.GlobalPoint;
 
+                // ★ 获取参考打断点所在管线的中心线标高 refZ
+                double refZ = breakPt.Z;
+                Element refElem = doc.GetElement(ref1.ElementId);
+                if (refElem?.Location is LocationCurve refLc && refLc.Curve != null)
+                {
+                    IntersectionResult refProj = refLc.Curve.Project(breakPt);
+                    if (refProj != null) refZ = refProj.XYZPoint.Z;
+                }
+
                 Log($"打断点: {MEPUpDownCalculator.Fmt(breakPt)}");
                 Log($"升降侧参考点: {MEPUpDownCalculator.Fmt(sidePt)}");
+                Log($"参考打断点真实标高 Z = {refZ:F4}");
 
                 // ── 第 4 步：批量处理 ──
                 MEPUpDownService service = new MEPUpDownService(debugInfo);
@@ -152,7 +157,7 @@ namespace MEPTools.MEPHighLowUpDown
                         try
                         {
                             bool ok = service.ProcessSingleElement(
-                                doc, eid, breakPt, sidePt, h_offset_ft, angleDeg);
+                                doc, eid, breakPt, sidePt, h_offset_ft, angleDeg, refZ);
                             if (ok) successCount++; else failCount++;
                         }
                         catch (Exception ex)
@@ -224,25 +229,28 @@ namespace MEPTools.MEPHighLowUpDown
             {
                 Title = title,
                 Width = 420,
-                Height = 200,
+                SizeToContent = SizeToContent.Height, // ★ 修复：根据内容自动调整高度，不再写死 200
                 WindowStartupLocation = WindowStartupLocation.CenterScreen,
                 ResizeMode = ResizeMode.NoResize,
                 Topmost = true
             };
 
             StackPanel panel = new StackPanel { Margin = new Thickness(15) };
+            
             TextBlock txtTip = new TextBlock
             {
                 Text = tipText + "\n回车 / 空格 确认   |   ESC 取消",
                 Margin = new Thickness(0, 0, 0, 12),
-                FontSize = 12
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap // ★ 修复：防止文字过长撑出边界
             };
 
             TextBox txtInput = new TextBox
             {
                 Text = defaultValue,
                 FontSize = 14,
-                Margin = new Thickness(0, 0, 0, 15)
+                Margin = new Thickness(0, 0, 0, 15),
+                Padding = new Thickness(4) // 稍微加点内边距更好看
             };
 
             StackPanel btnPanel = new StackPanel
@@ -251,8 +259,8 @@ namespace MEPTools.MEPHighLowUpDown
                 HorizontalAlignment = HorizontalAlignment.Right
             };
 
-            Button btnOk = new Button { Content = "确定", Width = 100, Margin = new Thickness(0, 0, 10, 0) };
-            Button btnCancel = new Button { Content = "取消", Width = 100 };
+            Button btnOk = new Button { Content = "确定", Width = 80, Height = 28, Margin = new Thickness(0, 0, 10, 0) };
+            Button btnCancel = new Button { Content = "取消", Width = 80, Height = 28 };
 
             btnOk.Click += (s, e) => window.DialogResult = true;
             btnCancel.Click += (s, e) => window.DialogResult = false;

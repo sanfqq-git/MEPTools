@@ -24,8 +24,8 @@ namespace MEPTools
                 new ButtonConfig { Id = "MEPTools.Btn_HighLow45",                 Text = "高低连接 45°",         ToolTip = "有高差的两组MEP 元素，以固定 45° 斜段生成连接", CommandType = typeof(MEPTools.MEPConnector.HighLow.Command45Degree),    PulldownGroup = "连接工具" },
                 new ButtonConfig { Id = "MEPTools.Btn_HighLow90",                 Text = "高低连接 90°",         ToolTip = "有高差的两组MEP 元素，以纯垂直方式（90°）生成连接", CommandType = typeof(MEPTools.MEPConnector.HighLow.Command90Degree),    PulldownGroup = "连接工具" },
                 new ButtonConfig { Id = "MEPTools.Btn_HighLowCustom",             Text = "高低连接 自定义",      ToolTip = "有高差的两组MEP 元素，输入 1~90° 自定义角度生成连接", CommandType = typeof(MEPTools.MEPConnector.HighLow.CommandCustomAngle), PulldownGroup = "连接工具" },
-                new ButtonConfig { Id = "MEPTools.Btn_PlanarCollinear",           Text = "平面共线连接",         ToolTip = "同轴的两组MEP元素，直接延长并合并", CommandType = typeof(MEPTools.MEPConnector.Planar.Commands.CollinearCommand), PulldownGroup = "连接工具" },
-                new ButtonConfig { Id = "MEPTools.Btn_PlanarCorner",              Text = "平面转角连接",         ToolTip = "不平行但有交点的两组MEP元素，延长并生成弯头", CommandType = typeof(MEPTools.MEPConnector.Planar.Commands.CornerCommand), PulldownGroup = "连接工具" },
+                new ButtonConfig { Id = "MEPTools.Btn_SpatialCollinear",           Text = "共线连接",         ToolTip = "同轴的两组MEP元素，直接延长并合并", CommandType = typeof(MEPTools.MEPConnector.Spatial.Commands.CollinearCommand), PulldownGroup = "连接工具" },
+                new ButtonConfig { Id = "MEPTools.Btn_SpatialCorner",              Text = "转角连接",         ToolTip = "不平行但有交点的两组MEP元素，延长并生成弯头", CommandType = typeof(MEPTools.MEPConnector.Spatial.Commands.CornerCommand), PulldownGroup = "连接工具" },
                 new ButtonConfig { Id = "MEPTools.Btn_AlignMEP",                  Text = "共线对齐准备",         ToolTip = "将 B 组 MEP 元素在水平面上平移到 A 组轴线上（不合并），用于共线合并前的手动纠偏", CommandType = typeof(MEPTools.MEPConnector.AlignMEPCommand), PulldownGroup = "连接工具" },
 
                 // ================= 2. 选择工具 (下拉菜单) =================

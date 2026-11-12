@@ -1,15 +1,15 @@
 using System;
 using Autodesk.Revit.DB;
 
-namespace MEPTools.MEPConnector.Planar.Core
+namespace MEPTools.MEPConnector.Spatial.Core
 {
     /// <summary>
     /// 平面（无高差）共线场景的 B→A 水平对齐工具。
-    /// 平行度容差与 PlanarConnectorCalculator 保持一致（1e-2）。
+    /// 平行度容差与 ConnectorCalculator 保持一致（1e-2）。
     /// </summary>
-    public static class PlanarMEPAligner
+    public static class MEPAligner
     {
-        // 与 PlanarConnectorCalculator.GetHorizontalDeviation / ComputeCollinear 一致
+        // 与 ConnectorCalculator.GetHorizontalDeviation / ComputeCollinear 一致
         private const double ParallelTolCross = 1e-2;
 
         public static bool AlignPair(Document doc, Element a, Element b)
@@ -32,7 +32,6 @@ namespace MEPTools.MEPConnector.Planar.Core
             XYZ b1 = lb.GetEndPoint(1);
             XYZ mb = (b0 + b1) * 0.5;
 
-            // dirA 已是单位向量，normalA 天然是单位向量
             XYZ normalA = new XYZ(-dirA.Y, dirA.X, 0);
             XYZ vecAtoB = new XYZ(mb.X - a0.X, mb.Y - a0.Y, 0);
             double dist = vecAtoB.DotProduct(normalA);

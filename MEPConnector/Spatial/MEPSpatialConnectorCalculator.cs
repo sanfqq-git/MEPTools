@@ -6,11 +6,11 @@ using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
 
-namespace MEPTools.MEPConnector.Planar.Core
+namespace MEPTools.MEPConnector.Spatial.Core
 {
     public enum MEPElementType { Pipe, Duct, CableTray, Unknown }
 
-    public class PlanarConnectGeometry
+    public class ConnectGeometry
     {
         public XYZ PA { get; set; }
         public XYZ PB { get; set; }
@@ -20,6 +20,12 @@ namespace MEPTools.MEPConnector.Planar.Core
         public bool IsCollinear { get; set; }
         public bool IsValid { get; set; }
         public string ErrorMessage { get; set; }
+
+        /// <summary>【新增】空间错开量（ft）。仅信息采集，不参与 IsValid 判定。</summary>
+        public double SpatialGap { get; set; }
+
+        /// <summary>【新增】true = ComputeCorner 平面路径；false = ComputeCorner3D 空间路径。</summary>
+        public bool IsPlanarPath { get; set; }
     }
 
     public class ConnectorPair
@@ -27,16 +33,19 @@ namespace MEPTools.MEPConnector.Planar.Core
         public ElementId AId { get; set; }
         public ElementId BId { get; set; }
         public double Distance { get; set; }
+
+        /// <summary>【新增】空间错开量（mm）。仅转角命令汇总用；0 表示未检测或无错开。</summary>
+        public double SpatialGapMm { get; set; }
     }
 
-    public static class PlanarConnectorCalculator
+    public static class ConnectorCalculator
     {
         public const double FtToMm = 304.8;
 
         // 平行度容差（共线判定与水平偏差判定共用）
         private const double ParallelTolCross = 1e-2;
 
-        // 【新增】平面投影退化阈值：XY 投影 / 总线长 < 该值视为“平面退化”
+        // 平面投影退化阈值：XY 投影 / 总线长 < 该值视为"平面退化"
         // 0.2 约对应 78.5° 以上倾斜；立管必然满足，普通坡度管不会误判
         private const double PlanarDegenerateRatio = 0.2;
 
@@ -90,9 +99,9 @@ namespace MEPTools.MEPConnector.Planar.Core
             return Math.Abs(ab.X * da.Y - ab.Y * da.X);
         }
 
-        public static PlanarConnectGeometry ComputeCollinear(Element a, Element b)
+        public static ConnectGeometry ComputeCollinear(Element a, Element b)
         {
-            var g = new PlanarConnectGeometry { IsValid = false, IsCollinear = true };
+            var g = new ConnectGeometry { IsValid = false, IsCollinear = true, IsPlanarPath = true };
 
             Line la = GetAxisLine(a);
             Line lb = GetAxisLine(b);
@@ -144,17 +153,19 @@ namespace MEPTools.MEPConnector.Planar.Core
                 return g;
             }
 
+            g.SpatialGap = 0;   // 共线场景必然共面
             g.IsValid = true;
             return g;
         }
 
         /// <summary>
-        /// 平面转角（原有逻辑，本方案未修改任何一行）。
+        /// 平面转角（原有逻辑不变）。
         /// 仅在两端都非立管时被 ComputeCornerAuto 调用。
+        /// 【新增】末尾采集 SpatialGap / IsPlanarPath，供命令层汇总决策，不参与 IsValid 判定。
         /// </summary>
-        public static PlanarConnectGeometry ComputeCorner(Element a, Element b)
+        public static ConnectGeometry ComputeCorner(Element a, Element b)
         {
-            var g = new PlanarConnectGeometry { IsValid = false, IsCollinear = false };
+            var g = new ConnectGeometry { IsValid = false, IsCollinear = false };
 
             Line la = GetAxisLine(a);
             Line lb = GetAxisLine(b);
@@ -181,17 +192,22 @@ namespace MEPTools.MEPConnector.Planar.Core
             g.PA = (a0.DistanceTo(g.P) < a1.DistanceTo(g.P)) ? a0 : a1;
             g.PB = (b0.DistanceTo(g.P) < b1.DistanceTo(g.P)) ? b0 : b1;
 
+            // 【仅信息采集，不改变 IsValid 判定与返回路径】
+            XYZ qa, qb;
+            g.SpatialGap = GetSpatialLineGap(a, b, out qa, out qb);
+            g.IsPlanarPath = true;
+
             g.IsValid = true;
             return g;
         }
 
         // ============================================================
-        // 【新增】以下 4 个方法为“空间转角”路径，与原平面路径完全隔离
+        // 空间转角路径，与平面路径完全隔离
         // ============================================================
 
         /// <summary>
         /// 判断单条线在平面投影中是否退化（近似立管）。
-        /// 采用 XY 投影长度占比，直接对应“平面视图里是否可见”。
+        /// 采用 XY 投影长度占比，直接对应"平面视图里是否可见"。
         /// null 线交给原有平面逻辑报错，不在此处判退化。
         /// </summary>
         private static bool IsPlanarDegenerate(Line l)
@@ -214,13 +230,64 @@ namespace MEPTools.MEPConnector.Planar.Core
         }
 
         /// <summary>
+        /// 【新增·公共 API】两条 MEP 轴线（视为无限空间直线）的最近点对距离。
+        ///
+        /// 用途：判断两条管在空间中是否真正相交。XY 投影上十字交叉但标高/坡度不同时，
+        /// 投影有交点但空间中错开 —— 这不是真正交点，强行接驳会生成斜管。
+        ///
+        /// 独立于任何连接逻辑，可用于未来带坡度管辅助接驳、坡道对齐等场景。
+        /// </summary>
+        /// <returns>最近点对距离（ft）；无法计算返回 double.MaxValue。</returns>
+        public static double GetSpatialLineGap(Element a, Element b, out XYZ closestA, out XYZ closestB)
+        {
+            closestA = closestB = null;
+            Line la = GetAxisLine(a);
+            Line lb = GetAxisLine(b);
+            if (la == null || lb == null) return double.MaxValue;
+
+            XYZ a0 = la.GetEndPoint(0), a1 = la.GetEndPoint(1);
+            XYZ b0 = lb.GetEndPoint(0), b1 = lb.GetEndPoint(1);
+
+            XYZ da = a1 - a0;
+            XYZ db = b1 - b0;
+            if (da.GetLength() < 1e-9 || db.GetLength() < 1e-9) return double.MaxValue;
+            da = da.Normalize();
+            db = db.Normalize();
+
+            XYZ w0 = a0 - b0;
+            double aa = 1.0;
+            double bb = da.DotProduct(db);
+            double cc = 1.0;
+            double dd = da.DotProduct(w0);
+            double ee = db.DotProduct(w0);
+            double denom = aa * cc - bb * bb;
+
+            double s, t;
+            if (Math.Abs(denom) < 1e-9)
+            {
+                // 平行：距离为恒定值，任取一点投影即可
+                s = 0;
+                t = ee;
+            }
+            else
+            {
+                s = (bb * ee - cc * dd) / denom;
+                t = (aa * ee - bb * dd) / denom;
+            }
+
+            closestA = a0 + da * s;
+            closestB = b0 + db * t;
+            return closestA.DistanceTo(closestB);
+        }
+
+        /// <summary>
         /// 空间转角：取两条空间直线最近点对的中点作为转角位置。
         /// 适用于立管 + 水平管；两根立管会因平行被拒绝。
         /// 与 ComputeCorner 的 XY 投影逻辑完全独立，互不影响。
         /// </summary>
-        public static PlanarConnectGeometry ComputeCorner3D(Element a, Element b)
+        public static ConnectGeometry ComputeCorner3D(Element a, Element b)
         {
-            var g = new PlanarConnectGeometry { IsValid = false, IsCollinear = false };
+            var g = new ConnectGeometry { IsValid = false, IsCollinear = false };
 
             Line la = GetAxisLine(a);
             Line lb = GetAxisLine(b);
@@ -236,11 +303,9 @@ namespace MEPTools.MEPConnector.Planar.Core
             db = db.Normalize();
 
             // 三维平行判定：1 - |cosθ| < 1e-4 约对应 0.81° 以内，视为平行
-            // 两根立管必然平行 → 直接拒绝；立管 × 水平管 dot≈0 → 不平行
             double dot = da.DotProduct(db);
             if (1.0 - Math.Abs(dot) < 1e-4) { g.ErrorMessage = "两管平行，无法转角连接"; return g; }
 
-            // 两条空间直线的最近点对：P1 = a0 + da*t，P2 = b0 + db*s
             XYZ w0 = a0 - b0;
             double aa = 1.0;
             double bb = da.DotProduct(db);
@@ -257,7 +322,7 @@ namespace MEPTools.MEPConnector.Planar.Core
             XYZ q2 = b0 + db * s;
             double gap = q1.DistanceTo(q2);
 
-            // 异面容差与共线错开容差保持一致：50mm
+            // 空间转角异面容差：50mm
             double tol = UnitUtils.ConvertToInternalUnits(50.0, UnitTypeId.Millimeters);
             if (gap > tol)
             {
@@ -266,9 +331,12 @@ namespace MEPTools.MEPConnector.Planar.Core
             }
 
             g.P = (q1 + q2) * 0.5;
-
             g.PA = (a0.DistanceTo(g.P) < a1.DistanceTo(g.P)) ? a0 : a1;
             g.PB = (b0.DistanceTo(g.P) < b1.DistanceTo(g.P)) ? b0 : b1;
+
+            // 【信息采集】供命令层区分路径类型；立管路径不参与斜管弹窗
+            g.SpatialGap = gap;
+            g.IsPlanarPath = false;
 
             g.IsValid = true;
             return g;
@@ -277,9 +345,9 @@ namespace MEPTools.MEPConnector.Planar.Core
         /// <summary>
         /// 转角计算统一入口：
         /// - 任一端为近似立管 → ComputeCorner3D（空间路径）
-        /// - 否则             → ComputeCorner（原平面路径，恒等映射）
+        /// - 否则             → ComputeCorner（平面路径）
         /// </summary>
-        public static PlanarConnectGeometry ComputeCornerAuto(Element a, Element b)
+        public static ConnectGeometry ComputeCornerAuto(Element a, Element b)
         {
             return NeedSpatialCorner(a, b) ? ComputeCorner3D(a, b) : ComputeCorner(a, b);
         }
@@ -334,7 +402,6 @@ namespace MEPTools.MEPConnector.Planar.Core
                             if (GetSystemTypeId(a, typeA) != GetSystemTypeId(b, typeB)) continue;
                         }
 
-                        // 【修改】原为 ComputeCorner，改为自动分流入口
                         var g = ComputeCornerAuto(a, b);
                         if (g.IsValid)
                         {

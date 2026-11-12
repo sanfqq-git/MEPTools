@@ -5,18 +5,18 @@ using Autodesk.Revit.DB;
 using MEPTools.Shared;
 using Connector = Autodesk.Revit.DB.Connector;
 
-namespace MEPTools.MEPConnector.Planar.Core
+namespace MEPTools.MEPConnector.Spatial.Core
 {
-    public class PlanarConnectorService
+    public class ConnectorService
     {
         private readonly MEPLogger _log;
 
-        public PlanarConnectorService() : this(MEPLogger.Instance) { }
-        public PlanarConnectorService(MEPLogger log) { _log = log ?? MEPLogger.Instance; }
+        public ConnectorService() : this(MEPLogger.Instance) { }
+        public ConnectorService(MEPLogger log) { _log = log ?? MEPLogger.Instance; }
 
         public bool AlignPair(Document doc, Element a, Element b)
         {
-            return PlanarMEPAligner.AlignPair(doc, a, b);
+            return MEPAligner.AlignPair(doc, a, b);
         }
 
         public bool ProcessCollinear(Document doc, Element a, Element b)
@@ -27,7 +27,7 @@ namespace MEPTools.MEPConnector.Planar.Core
                 return false;
             }
 
-            var g = PlanarConnectorCalculator.ComputeCollinear(a, b);
+            var g = ConnectorCalculator.ComputeCollinear(a, b);
             if (!g.IsValid) { _log.AppendLine("✗ [共线] 计算失败: " + g.ErrorMessage); return false; }
 
             if (!IsInnerEndFree(a, b, g.PA, out string innerDetail))
@@ -76,7 +76,7 @@ namespace MEPTools.MEPConnector.Planar.Core
             return !hasExternal;
         }
 
-        private bool TryHardMerge(Document doc, Element a, Element b, PlanarConnectGeometry g)
+        private bool TryHardMerge(Document doc, Element a, Element b, ConnectGeometry g)
         {
             try
             {
@@ -206,7 +206,7 @@ namespace MEPTools.MEPConnector.Planar.Core
             }
         }
 
-        private bool ProcessCollinearFallback(Document doc, Element a, Element b, PlanarConnectGeometry g)
+        private bool ProcessCollinearFallback(Document doc, Element a, Element b, ConnectGeometry g)
         {
             Connector ca = GetExactConnector(a, g.PA);
             Connector cb = GetExactConnector(b, g.PB);
@@ -232,16 +232,14 @@ namespace MEPTools.MEPConnector.Planar.Core
         }
 
         /// <summary>
-        /// 转角连接：计算入口改为 ComputeCornerAuto，
-        /// 平面场景等价于原 ComputeCorner（自动分流保证），立管场景走三维最近点对。
-        /// 其余移动端点 / 查找连接器 / 创建弯头的逻辑完全不变。
+        /// 转角连接：计算入口 ComputeCornerAuto（平面场景走 XY 求交，立管场景走三维最近点对）。
+        /// 空间错开的"是否放行"由命令层汇总弹窗决定，本方法只执行授权后的动作。
         /// </summary>
         public bool ProcessCorner(Document doc, Element a, Element b)
         {
             if (a == null || b == null || !a.IsValidObject || !b.IsValidObject) return false;
 
-            // 【修改】原为 ComputeCorner，改为自动分流入口
-            var g = PlanarConnectorCalculator.ComputeCornerAuto(a, b);
+            var g = ConnectorCalculator.ComputeCornerAuto(a, b);
             if (!g.IsValid) { _log.AppendLine("✗ [转角] 计算失败: " + g.ErrorMessage); return false; }
 
             if (g.PA.DistanceTo(g.P) > 1e-4) MoveEndpointTo(doc, a, g.PA, g.P);
