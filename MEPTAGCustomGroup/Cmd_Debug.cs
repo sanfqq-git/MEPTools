@@ -49,18 +49,17 @@ namespace MEPTools.MEPGroupTag
             List<DebugMepGroup> groups = GroupByBottomElevation(selectedData, config.GroupToleranceMM);
             MEPLogger.Instance.AppendLine($"[日志] 共分为 {groups.Count} 组。");
 
-            // 3. 抓取默认实体 Tag 族（优先继承视图）
+            // 3. 抓取默认实体 Tag 族
             FamilySymbol ductTagSym = GetDefaultTagSymbol(doc, activeView, BuiltInCategory.OST_DuctTags);
             FamilySymbol trayTagSym = GetDefaultTagSymbol(doc, activeView, BuiltInCategory.OST_CableTrayTags);
             FamilySymbol pipeTagSym = GetDefaultTagSymbol(doc, activeView, BuiltInCategory.OST_PipeTags);
 
-            // 抓取所有可用 Tag 族，用于附加行规则匹配
+            // 收集项目中所有可用的 Tag 族字典，用于根据名字精准查找
             var allTagSymbols = new Dictionary<string, FamilySymbol>();
             var collector = new FilteredElementCollector(doc).OfClass(typeof(FamilySymbol)).Cast<FamilySymbol>()
                 .Where(s => s.Category != null && (s.Category.Id.IntegerValue == (int)BuiltInCategory.OST_DuctTags || 
                                                    s.Category.Id.IntegerValue == (int)BuiltInCategory.OST_PipeTags || 
-                                                   s.Category.Id.IntegerValue == (int)BuiltInCategory.OST_CableTrayTags ||
-                                                   s.Category.Id.IntegerValue == (int)BuiltInCategory.OST_MultiCategoryTags));
+                                                   s.Category.Id.IntegerValue == (int)BuiltInCategory.OST_CableTrayTags));
             foreach (var sym in collector)
             {
                 string key = $"{sym.Family.Name}: {sym.Name}";
@@ -86,7 +85,6 @@ namespace MEPTools.MEPGroupTag
                 double currentY = basePickPt.Y;
                 double lineSpacingFt = UnitUtils.ConvertToInternalUnits(config.LineSpacingMM, UnitTypeId.Millimeters);
 
-                // 分组按标高从上到下
                 groups = groups.OrderByDescending(g => g.BaseElevation).ToList();
 
                 for (int i = 0; i < groups.Count; i++)
@@ -94,7 +92,6 @@ namespace MEPTools.MEPGroupTag
                     var group = groups[i];
                     int groupIndex = i + 1;
                     
-                    // 组内排序：Y降序（从上到下），X升序（从左到右）
                     var sortedElems = group.Elements
                         .OrderByDescending(e => e.WorldCenter.Y)
                         .ThenBy(e => e.WorldCenter.X)
@@ -102,45 +99,12 @@ namespace MEPTools.MEPGroupTag
 
                     // ============ 核心1：在每一组【前】插入 自定义附加行 ============
                     var rulesBefore = config.ExtraRules.Where(r => r.GroupIndex == groupIndex.ToString() || r.GroupIndex == "*").ToList();
-                    
                     foreach (var rule in rulesBefore)
                     {
-                        if (!allTagSymbols.TryGetValue(rule.TagSymbolName, out FamilySymbol targetSym))
+                        if (TryCreateTagForRule(rule, group.Elements, selectedData, allTagSymbols, doc, activeView, basePickPt.X, ref currentY, lineSpacingFt))
                         {
-                            MEPLogger.Instance.AppendLine($"[警告] 找不到指定的 Tag 族: {rule.TagSymbolName}");
-                            continue; 
+                            // 生成成功，Y 已经自动递减
                         }
-
-                        Element hostElem = null;
-                        var catId = targetSym.Category.Id.IntegerValue;
-                        if (catId == (int)BuiltInCategory.OST_DuctTags) 
-                            hostElem = group.Elements.FirstOrDefault(e => e.Elem is Duct)?.Elem;
-                        else if (catId == (int)BuiltInCategory.OST_CableTrayTags) 
-                            hostElem = group.Elements.FirstOrDefault(e => e.Elem is CableTray)?.Elem;
-                        else if (catId == (int)BuiltInCategory.OST_PipeTags) 
-                            hostElem = group.Elements.FirstOrDefault(e => e.Elem is Pipe)?.Elem;
-                        else 
-                            hostElem = group.Elements.FirstOrDefault()?.Elem;
-
-                        if (hostElem == null)
-                        {
-                            TaskDialog.Show("宿主缺失", $"设定中针对第 {groupIndex} 组配置了标签 [{rule.TagText}] ({rule.TagSymbolName})，\n但是当前组内没有找到对应类别的实体作为宿主！");
-                            t.RollBack();
-                            return Result.Cancelled;
-                        }
-
-                        var refPair = selectedData.FirstOrDefault(d => d.Elem.Id == hostElem.Id);
-                        if (refPair.Ref == null) continue;
-
-                        if (!targetSym.IsActive) targetSym.Activate();
-
-                        // 【修复】：生成时直接传入计算好的位置，绝不用 basePickPt 重叠
-                        XYZ createPos = new XYZ(basePickPt.X, currentY, basePickPt.Z);
-                        IndependentTag prefixTag = IndependentTag.Create(
-                            doc, targetSym.Id, activeView.Id, refPair.Ref, false, TagOrientation.Horizontal, createPos);
-                        
-                        TrySetTagText(prefixTag, rule.TagText);
-                        currentY -= lineSpacingFt;
                     }
 
                     // ============ 核心2：排版本组所有实体 ============
@@ -163,47 +127,12 @@ namespace MEPTools.MEPGroupTag
 
                     // ============ 核心3：在每一组【后】插入 自定义附加行 ============
                     var rulesAfter = config.ExtraRules.Where(r => r.GroupIndex == "After_" + groupIndex.ToString() || r.GroupIndex == "*After").ToList();
-                    
-                    MEPLogger.Instance.AppendLine($"[日志] 第 {groupIndex} 组后置规则数: {rulesAfter.Count}");
-                    
                     foreach (var rule in rulesAfter)
                     {
-                        if (!allTagSymbols.TryGetValue(rule.TagSymbolName, out FamilySymbol targetSym))
+                        if (TryCreateTagForRule(rule, group.Elements, selectedData, allTagSymbols, doc, activeView, basePickPt.X, ref currentY, lineSpacingFt))
                         {
-                            MEPLogger.Instance.AppendLine($"[警告] 找不到指定的 Tag 族: {rule.TagSymbolName}");
-                            continue; 
+                            // 生成成功，Y 已经自动递减
                         }
-
-                        Element hostElem = null;
-                        var catId = targetSym.Category.Id.IntegerValue;
-                        if (catId == (int)BuiltInCategory.OST_DuctTags) 
-                            hostElem = group.Elements.FirstOrDefault(e => e.Elem is Duct)?.Elem;
-                        else if (catId == (int)BuiltInCategory.OST_CableTrayTags) 
-                            hostElem = group.Elements.FirstOrDefault(e => e.Elem is CableTray)?.Elem;
-                        else if (catId == (int)BuiltInCategory.OST_PipeTags) 
-                            hostElem = group.Elements.FirstOrDefault(e => e.Elem is Pipe)?.Elem;
-                        else 
-                            hostElem = group.Elements.FirstOrDefault()?.Elem;
-
-                        if (hostElem == null)
-                        {
-                            TaskDialog.Show("宿主缺失", $"设定中针对第 {groupIndex} 组【后】配置了标签 [{rule.TagText}] ({rule.TagSymbolName})，\n但是当前组内没有找到对应类别的实体作为宿主！");
-                            t.RollBack();
-                            return Result.Cancelled;
-                        }
-
-                        var refPair = selectedData.FirstOrDefault(d => d.Elem.Id == hostElem.Id);
-                        if (refPair.Ref == null) continue;
-
-                        if (!targetSym.IsActive) targetSym.Activate();
-
-                        // 【修复】：生成时直接传入计算好的位置
-                        XYZ createPos = new XYZ(basePickPt.X, currentY, basePickPt.Z);
-                        IndependentTag suffixTag = IndependentTag.Create(
-                            doc, targetSym.Id, activeView.Id, refPair.Ref, false, TagOrientation.Horizontal, createPos);
-                        
-                        TrySetTagText(suffixTag, rule.TagText);
-                        currentY -= lineSpacingFt;
                     }
 
                     // ============ 核心4：组间空行 ============
@@ -218,22 +147,69 @@ namespace MEPTools.MEPGroupTag
             return Result.Succeeded;
         }
 
-        private void TrySetTagText(IndependentTag tag, string text)
+        /// <summary>
+        /// 按照 DUCT -> PIPE -> CABLE TRAY 的 OR 顺序，尝试为当前规则生成附加 Tag
+        /// </summary>
+        private bool TryCreateTagForRule(ExtraRowRule rule, List<ElemInfo> groupElems, List<ElemInfo> selectedData, Dictionary<string, FamilySymbol> allTagSymbols, Document doc, View activeView, double baseX, ref double currentY, double lineSpacingFt)
         {
-            Parameter p = tag.LookupParameter("T TO B") ?? 
-                          tag.LookupParameter("Tag") ?? 
-                          tag.LookupParameter("标记") ??
-                          tag.LookupParameter("标签") ??
-                          tag.LookupParameter("文字");
+            // 1. 找 DUCT
+            var ductHost = groupElems.FirstOrDefault(e => e.Elem is Duct);
+            if (ductHost != null && !string.IsNullOrEmpty(rule.DuctTagSymName))
+            {
+                if (allTagSymbols.TryGetValue(rule.DuctTagSymName, out FamilySymbol sym))
+                {
+                    CreateTag(sym, ductHost.Ref, rule.TagText, doc, activeView, baseX, currentY);
+                    currentY -= lineSpacingFt;
+                    return true;
+                }
+            }
+
+            // 2. 找 PIPE
+            var pipeHost = groupElems.FirstOrDefault(e => e.Elem is Pipe);
+            if (pipeHost != null && !string.IsNullOrEmpty(rule.PipeTagSymName))
+            {
+                if (allTagSymbols.TryGetValue(rule.PipeTagSymName, out FamilySymbol sym))
+                {
+                    CreateTag(sym, pipeHost.Ref, rule.TagText, doc, activeView, baseX, currentY);
+                    currentY -= lineSpacingFt;
+                    return true;
+                }
+            }
+
+            // 3. 找 CABLE TRAY
+            var trayHost = groupElems.FirstOrDefault(e => e.Elem is CableTray);
+            if (trayHost != null && !string.IsNullOrEmpty(rule.CableTrayTagSymName))
+            {
+                if (allTagSymbols.TryGetValue(rule.CableTrayTagSymName, out FamilySymbol sym))
+                {
+                    CreateTag(sym, trayHost.Ref, rule.TagText, doc, activeView, baseX, currentY);
+                    currentY -= lineSpacingFt;
+                    return true;
+                }
+            }
+
+            MEPLogger.Instance.AppendLine($"[警告] 无法为规则 [{rule.TagText}] 找到匹配的宿主或 Tag 族，已跳过。");
+            return false;
+        }
+
+        private void CreateTag(FamilySymbol sym, Reference hostRef, string text, Document doc, View activeView, double x, double y)
+        {
+            if (!sym.IsActive) sym.Activate();
+            XYZ createPos = new XYZ(x, y, UnitUtils.ConvertToInternalUnits(0, UnitTypeId.Millimeters)); 
+            // 注意：Z 坐标在外部已经由 basePickPt.Z 决定了，这里传入的 currentY 已经是包含 Z 的切面
+            createPos = new XYZ(x, y, doc.ActiveView.GenLevel != null ? doc.ActiveView.GenLevel.Elevation : 0);
+
+            IndependentTag newTag = IndependentTag.Create(
+                doc, sym.Id, activeView.Id, hostRef, false, TagOrientation.Horizontal, createPos);
+
+            Parameter p = newTag.LookupParameter("T TO B") ?? 
+                          newTag.LookupParameter("Tag") ?? 
+                          newTag.LookupParameter("标记") ??
+                          newTag.LookupParameter("标签") ??
+                          newTag.LookupParameter("文字");
 
             if (p != null && !p.IsReadOnly && p.StorageType == StorageType.String)
-            {
                 p.Set(text);
-            }
-            else
-            {
-                MEPLogger.Instance.AppendLine($"[警告] 未在族 {tag.Name} 中找到可写文字参数，{text} 无法显示。");
-            }
         }
 
         // ================= 辅助函数 =================

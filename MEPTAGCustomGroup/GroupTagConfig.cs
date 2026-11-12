@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
-using System.IO; // 新增
+using System.IO; 
 using System.Linq;
 using System.Reflection;
 using System.Windows.Forms;
@@ -10,10 +10,17 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using MEPTools.Shared;
 
+// 解决类型冲突的别名
 using Point = System.Drawing.Point;
+using Color = System.Drawing.Color;
 using Button = System.Windows.Forms.Button;
 using Label = System.Windows.Forms.Label;
 using Size = System.Drawing.Size;
+using ComboBox = System.Windows.Forms.ComboBox;
+using TextBox = System.Windows.Forms.TextBox;
+using Control = System.Windows.Forms.Control; 
+using Form = System.Windows.Forms.Form; // 👈 修复 Form 冲突
+using ListBox = System.Windows.Forms.ListBox; // 👈 顺便加上 ListBox 别名以防万一
 using OpenFileDialog = System.Windows.Forms.OpenFileDialog;
 using SaveFileDialog = System.Windows.Forms.SaveFileDialog;
 
@@ -21,9 +28,11 @@ namespace MEPTools.MEPGroupTag
 {
     public class ExtraRowRule
     {
-        public string GroupIndex { get; set; } // "1", "2", "*", "After_1", "After_2", "*After"
-        public string TagText { get; set; }    // 如 "T1"
-        public string TagSymbolName { get; set; } // 如 "HA-ANN-DUG-TK TAG-EL: Standard"
+        public string GroupIndex { get; set; } 
+        public string TagText { get; set; }    
+        public string DuctTagSymName { get; set; } 
+        public string PipeTagSymName { get; set; } 
+        public string CableTrayTagSymName { get; set; } 
     }
 
     public class GroupTagConfig
@@ -31,14 +40,9 @@ namespace MEPTools.MEPGroupTag
         public double GroupToleranceMM { get; set; } = 25.0;
         public double LineSpacingMM { get; set; } = 200.0;
         public int BlankLines { get; set; } = 2;
-        
-        public string DuctTagType { get; set; } = "";
-        public string CableTrayTagType { get; set; } = "";
-        public string PipeTagType { get; set; } = "";
 
         public List<ExtraRowRule> ExtraRules { get; set; } = new List<ExtraRowRule>();
 
-        // ================= 全局配置存取 =================
         public static GroupTagConfig Load()
         {
             var cfg = new GroupTagConfig();
@@ -46,24 +50,23 @@ namespace MEPTools.MEPGroupTag
             cfg.GroupToleranceMM = MEPConfig.GetDouble("TagGroup.Tolerance", 25.0);
             cfg.LineSpacingMM = MEPConfig.GetDouble("TagGroup.LineSpacing", 200.0);
             cfg.BlankLines = MEPConfig.GetInt("TagGroup.BlankLines", 2);
-            cfg.DuctTagType = MEPConfig.GetString("TagGroup.DuctTagType", "");
-            cfg.CableTrayTagType = MEPConfig.GetString("TagGroup.CableTrayTagType", "");
-            cfg.PipeTagType = MEPConfig.GetString("TagGroup.PipeTagType", "");
 
             string rulesStr = MEPConfig.GetString("TagGroup.ExtraRules", "");
             if (!string.IsNullOrWhiteSpace(rulesStr))
             {
-                var items = rulesStr.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+                var items = rulesStr.Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries);
                 foreach (var item in items)
                 {
-                    var parts = item.Split(',');
-                    if (parts.Length == 3)
+                    var parts = item.Split(';');
+                    if (parts.Length >= 5)
                     {
                         cfg.ExtraRules.Add(new ExtraRowRule 
                         { 
-                            GroupIndex = parts[0].Trim(), 
-                            TagText = parts[1].Trim(), 
-                            TagSymbolName = parts[2].Trim() 
+                            GroupIndex = parts[0], 
+                            TagText = parts[1], 
+                            DuctTagSymName = parts[2],
+                            PipeTagSymName = parts[3],
+                            CableTrayTagSymName = parts[4]
                         });
                     }
                 }
@@ -76,30 +79,23 @@ namespace MEPTools.MEPGroupTag
             MEPConfig.SetValue("TagGroup.Tolerance", GroupToleranceMM.ToString());
             MEPConfig.SetValue("TagGroup.LineSpacing", LineSpacingMM.ToString());
             MEPConfig.SetValue("TagGroup.BlankLines", BlankLines.ToString());
-            MEPConfig.SetValue("TagGroup.DuctTagType", DuctTagType);
-            MEPConfig.SetValue("TagGroup.CableTrayTagType", CableTrayTagType);
-            MEPConfig.SetValue("TagGroup.PipeTagType", PipeTagType);
 
-            var ruleItems = ExtraRules.Select(r => $"{r.GroupIndex},{r.TagText},{r.TagSymbolName}");
-            MEPConfig.SetValue("TagGroup.ExtraRules", string.Join(";", ruleItems));
+            var ruleItems = ExtraRules.Select(r => $"{r.GroupIndex};{r.TagText};{r.DuctTagSymName};{r.PipeTagSymName};{r.CableTrayTagSymName}");
+            MEPConfig.SetValue("TagGroup.ExtraRules", string.Join("|", ruleItems));
             
             MEPConfig.Save();
         }
 
-        // ================= 独立文件存取（用于导入/导出） =================
         public void SaveToFile(string path)
         {
             var lines = new List<string>
             {
                 $"Tolerance={GroupToleranceMM}",
                 $"LineSpacing={LineSpacingMM}",
-                $"BlankLines={BlankLines}",
-                $"DuctTagType={DuctTagType}",
-                $"CableTrayTagType={CableTrayTagType}",
-                $"PipeTagType={PipeTagType}"
+                $"BlankLines={BlankLines}"
             };
-            var ruleItems = ExtraRules.Select(r => $"{r.GroupIndex},{r.TagText},{r.TagSymbolName}");
-            lines.Add($"ExtraRules={string.Join(";", ruleItems)}");
+            var ruleItems = ExtraRules.Select(r => $"{r.GroupIndex};{r.TagText};{r.DuctTagSymName};{r.PipeTagSymName};{r.CableTrayTagSymName}");
+            lines.Add($"ExtraRules={string.Join("|", ruleItems)}");
             File.WriteAllLines(path, lines);
         }
 
@@ -119,22 +115,21 @@ namespace MEPTools.MEPGroupTag
                 if (key == "Tolerance" && double.TryParse(val, out double t)) cfg.GroupToleranceMM = t;
                 else if (key == "LineSpacing" && double.TryParse(val, out double ls)) cfg.LineSpacingMM = ls;
                 else if (key == "BlankLines" && int.TryParse(val, out int bl)) cfg.BlankLines = bl;
-                else if (key == "DuctTagType") cfg.DuctTagType = val;
-                else if (key == "CableTrayTagType") cfg.CableTrayTagType = val;
-                else if (key == "PipeTagType") cfg.PipeTagType = val;
                 else if (key == "ExtraRules")
                 {
-                    var items = val.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+                    var items = val.Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries);
                     foreach (var item in items)
                     {
-                        var rParts = item.Split(',');
-                        if (rParts.Length == 3)
+                        var rParts = item.Split(';');
+                        if (rParts.Length >= 5)
                         {
                             cfg.ExtraRules.Add(new ExtraRowRule 
                             { 
-                                GroupIndex = rParts[0].Trim(), 
-                                TagText = rParts[1].Trim(), 
-                                TagSymbolName = rParts[2].Trim() 
+                                GroupIndex = rParts[0], 
+                                TagText = rParts[1], 
+                                DuctTagSymName = rParts[2],
+                                PipeTagSymName = rParts[3],
+                                CableTrayTagSymName = rParts[4]
                             });
                         }
                     }
@@ -169,9 +164,11 @@ namespace MEPTools.MEPGroupTag
         
         private NumericUpDown nudTolerance, nudLineSpacing, nudBlankLines;
         private DataGridView dgvExtra;
-        private Button btnOk, btnImport, btnExport;
-        
-        private Dictionary<string, FamilySymbol> _allTagSymbols;
+        private Button btnOk, btnImport, btnExport, btnClear;
+
+        private List<string> _ductTagsAll = new List<string>();
+        private List<string> _pipeTagsAll = new List<string>();
+        private List<string> _trayTagsAll = new List<string>();
 
         public GroupTagConfigForm(Document doc, GroupTagConfig config)
         {
@@ -184,7 +181,7 @@ namespace MEPTools.MEPGroupTag
         private void InitializeUI()
         {
             this.Text = "高度分组 TAG - 规则设置";
-            this.ClientSize = new Size(800, 580);
+            this.ClientSize = new Size(950, 580); 
             this.StartPosition = FormStartPosition.CenterScreen;
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
@@ -193,7 +190,7 @@ namespace MEPTools.MEPGroupTag
             int y = 20, gap = 35;
             int labelX = 20, inputX = 140;
 
-            // 参数设置区
+            // 基础参数
             var lblTol = new Label { Text = "分组容差(mm):", Location = new Point(labelX, y + 3), AutoSize = true };
             nudTolerance = new NumericUpDown { Location = new Point(inputX, y), Width = 80, Minimum = 1, Maximum = 1000, DecimalPlaces = 1 };
             this.Controls.Add(lblTol); this.Controls.Add(nudTolerance); 
@@ -207,14 +204,14 @@ namespace MEPTools.MEPGroupTag
             this.Controls.Add(lblBlank); this.Controls.Add(nudBlankLines);
             y += gap + 10;
 
-            // 附加行设置区
-            var lblExtra = new Label { Text = "组前/组后附加标签设定 (指定在哪一组前/后插入什么文字，并使用哪个 Tag 族):", Location = new Point(labelX, y), AutoSize = true, Font = new Font(this.Font, FontStyle.Bold) };
+            // 表格区
+            var lblExtra = new Label { Text = "组前/组后附加标签设定 (提示：双击右侧三个族列可弹出大窗口搜索):", Location = new Point(labelX, y), AutoSize = true, Font = new Font(this.Font, FontStyle.Bold), ForeColor = Color.DarkBlue };
             this.Controls.Add(lblExtra); y += 25;
 
             dgvExtra = new DataGridView
             {
                 Location = new Point(labelX, y),
-                Size = new Size(760, 350),
+                Size = new Size(910, 350), 
                 AllowUserToAddRows = true,
                 AllowUserToDeleteRows = true,
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
@@ -227,7 +224,8 @@ namespace MEPTools.MEPGroupTag
 
             dgvExtra.DataError += (s, e) => { e.ThrowException = false; e.Cancel = true; };
             
-            var colPosition = new DataGridViewComboBoxColumn { Name = "GroupIndex", HeaderText = "插入位置", FillWeight = 30 };
+            // 定义标准 5 列
+            var colPosition = new DataGridViewComboBoxColumn { Name = "GroupIndex", HeaderText = "插入位置", FillWeight = 15 };
             var positions = new List<string> { 
                 "每一组前", "每一组后",
                 "第1组前", "第1组后", "第2组前", "第2组后", "第3组前", "第3组后", "第4组前", "第4组后", "第5组前", "第5组后",
@@ -236,27 +234,62 @@ namespace MEPTools.MEPGroupTag
             colPosition.Items.AddRange(positions.ToArray());
             dgvExtra.Columns.Add(colPosition);
 
-            dgvExtra.Columns.Add(new DataGridViewTextBoxColumn { Name = "TagText", HeaderText = "生成的文字(如T1)", FillWeight = 25 });
+            dgvExtra.Columns.Add(new DataGridViewTextBoxColumn { Name = "TagText", HeaderText = "生成的文字(如T1)", FillWeight = 10 });
             
-            var colSymbol = new DataGridViewComboBoxColumn { Name = "TagSymbolName", HeaderText = "使用的 Tag 族 (FAMILY AND TYPE)", FillWeight = 45 };
-            dgvExtra.Columns.Add(colSymbol);
+            // 👇 后三列改为纯文本列，双击弹窗搜索 👇
+            dgvExtra.Columns.Add(new DataGridViewTextBoxColumn { Name = "DuctTagSym", HeaderText = "DUCT Tag 族", FillWeight = 25 });
+            dgvExtra.Columns.Add(new DataGridViewTextBoxColumn { Name = "PipeTagSym", HeaderText = "PIPE Tag 族", FillWeight = 25 });
+            dgvExtra.Columns.Add(new DataGridViewTextBoxColumn { Name = "TrayTagSym", HeaderText = "CABLE TRAY Tag 族", FillWeight = 25 });
             
+            // 绑定双击事件
+            dgvExtra.CellDoubleClick += DgvExtra_CellDoubleClick;
+
             this.Controls.Add(dgvExtra);
             y += 360;
 
-            // 👇 底部按钮区（加入输入/输出） 👇
-            btnImport = new Button { Text = "输入配置", Location = new Point(labelX, y), Width = 100, Height = 32 };
+            // 底部按钮
+            btnImport = new Button { Text = "输入配置", Location = new Point(labelX, y), Width = 90, Height = 32 };
             btnImport.Click += BtnImport_Click;
             this.Controls.Add(btnImport);
 
-            btnExport = new Button { Text = "输出配置", Location = new Point(labelX + 110, y), Width = 100, Height = 32 };
+            btnExport = new Button { Text = "输出配置", Location = new Point(labelX + 100, y), Width = 90, Height = 32 };
             btnExport.Click += BtnExport_Click;
             this.Controls.Add(btnExport);
 
-            btnOk = new Button { Text = "保存设置 (空格)", Location = new Point(660, y), Width = 120, Height = 32, DialogResult = DialogResult.OK };
+            btnClear = new Button { Text = "清空配置", Location = new Point(labelX + 200, y), Width = 90, Height = 32, ForeColor = Color.Red };
+            btnClear.Click += BtnClear_Click;
+            this.Controls.Add(btnClear);
+
+            btnOk = new Button { Text = "保存设置 (空格)", Location = new Point(810, y), Width = 120, Height = 32, DialogResult = DialogResult.OK };
             btnOk.Click += BtnOk_Click;
             this.AcceptButton = btnOk;
             this.Controls.Add(btnOk);
+        }
+
+        /// <summary>
+        /// 双击族列的单元格，弹出超爽的搜索窗口
+        /// </summary>
+        private void DgvExtra_CellDoubleClick(object sender, DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
+            
+            string colName = dgvExtra.Columns[e.ColumnIndex].Name;
+            List<string> dataSource = null;
+
+            if (colName == "DuctTagSym") dataSource = _ductTagsAll;
+            else if (colName == "PipeTagSym") dataSource = _pipeTagsAll;
+            else if (colName == "TrayTagSym") dataSource = _trayTagsAll;
+
+            if (dataSource != null)
+            {
+                using (var searchForm = new TagSearchForm(dataSource))
+                {
+                    if (searchForm.ShowDialog() == DialogResult.OK)
+                    {
+                        dgvExtra.Rows[e.RowIndex].Cells[e.ColumnIndex].Value = searchForm.SelectedResult;
+                    }
+                }
+            }
         }
 
         private void LoadData()
@@ -265,28 +298,25 @@ namespace MEPTools.MEPGroupTag
             nudLineSpacing.Value = (decimal)_config.LineSpacingMM;
             nudBlankLines.Value = _config.BlankLines;
 
-            _allTagSymbols = new Dictionary<string, FamilySymbol>();
+            _ductTagsAll.Clear();
+            _pipeTagsAll.Clear();
+            _trayTagsAll.Clear();
+
             var collector = new FilteredElementCollector(_doc).OfClass(typeof(FamilySymbol)).Cast<FamilySymbol>()
-                .Where(s => s.Category != null && (s.Category.Id.IntegerValue == (int)BuiltInCategory.OST_DuctTags || 
-                                                   s.Category.Id.IntegerValue == (int)BuiltInCategory.OST_PipeTags || 
-                                                   s.Category.Id.IntegerValue == (int)BuiltInCategory.OST_CableTrayTags ||
-                                                   s.Category.Id.IntegerValue == (int)BuiltInCategory.OST_MultiCategoryTags));
+                .Where(s => s.Category != null);
+            
             foreach (var sym in collector)
             {
                 string key = $"{sym.Family.Name}: {sym.Name}";
-                if (!_allTagSymbols.ContainsKey(key)) _allTagSymbols.Add(key, sym);
+                int catId = sym.Category.Id.IntegerValue;
+                if (catId == (int)BuiltInCategory.OST_DuctTags) _ductTagsAll.Add(key);
+                else if (catId == (int)BuiltInCategory.OST_PipeTags) _pipeTagsAll.Add(key);
+                else if (catId == (int)BuiltInCategory.OST_CableTrayTags) _trayTagsAll.Add(key);
             }
 
-            var allTagNames = _allTagSymbols.Keys.OrderBy(s => s).ToArray();
-            var extraCol = dgvExtra.Columns["TagSymbolName"] as DataGridViewComboBoxColumn;
-            if (extraCol != null) extraCol.Items.AddRange(allTagNames);
-
-            // 默认加一行示例
-            if (_config.ExtraRules.Count == 0)
-            {
-                _config.ExtraRules.Add(new ExtraRowRule { GroupIndex = "1", TagText = "T1", TagSymbolName = allTagNames.FirstOrDefault() ?? "" });
-                _config.ExtraRules.Add(new ExtraRowRule { GroupIndex = "After_1", TagText = "T2", TagSymbolName = allTagNames.FirstOrDefault() ?? "" });
-            }
+            _ductTagsAll = _ductTagsAll.OrderBy(s => s).ToList();
+            _pipeTagsAll = _pipeTagsAll.OrderBy(s => s).ToList();
+            _trayTagsAll = _trayTagsAll.OrderBy(s => s).ToList();
 
             RefreshGrid();
         }
@@ -302,8 +332,18 @@ namespace MEPTools.MEPGroupTag
                 else if (rule.GroupIndex.StartsWith("After_")) displayPos = $"第{rule.GroupIndex.Replace("After_", "")}组后";
                 else displayPos = $"第{rule.GroupIndex}组前";
 
-                int rowIdx = dgvExtra.Rows.Add(displayPos, rule.TagText);
-                dgvExtra.Rows[rowIdx].Cells["TagSymbolName"].Value = rule.TagSymbolName;
+                int rowIdx = dgvExtra.Rows.Add(displayPos, rule.TagText, rule.DuctTagSymName, rule.PipeTagSymName, rule.CableTrayTagSymName);
+            }
+        }
+
+        private void BtnClear_Click(object sender, EventArgs e)
+        {
+            if (MessageBox.Show("确定要清空所有配置吗？", "提示", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+            {
+                dgvExtra.Rows.Clear();
+                nudTolerance.Value = 25.0m;
+                nudLineSpacing.Value = 200.0m;
+                nudBlankLines.Value = 2;
             }
         }
 
@@ -319,9 +359,6 @@ namespace MEPTools.MEPGroupTag
                         _config.GroupToleranceMM = newConfig.GroupToleranceMM;
                         _config.LineSpacingMM = newConfig.LineSpacingMM;
                         _config.BlankLines = newConfig.BlankLines;
-                        _config.DuctTagType = newConfig.DuctTagType;
-                        _config.CableTrayTagType = newConfig.CableTrayTagType;
-                        _config.PipeTagType = newConfig.PipeTagType;
                         _config.ExtraRules = newConfig.ExtraRules;
 
                         nudTolerance.Value = (decimal)_config.GroupToleranceMM;
@@ -337,8 +374,7 @@ namespace MEPTools.MEPGroupTag
 
         private void BtnExport_Click(object sender, EventArgs e)
         {
-            CollectDataFromUI(); // 强制提交表格数据
-
+            CollectDataFromUI();
             using (SaveFileDialog sfd = new SaveFileDialog { Filter = "TAG配置文件 (*.txt)|*.txt", Title = "保存配置文件", FileName = "MEP_GroupTag_Config.txt" })
             {
                 if (sfd.ShowDialog() == DialogResult.OK)
@@ -356,9 +392,6 @@ namespace MEPTools.MEPGroupTag
             InfoCenterTip.Show("配置已保存到本地全局设置。");
         }
 
-        /// <summary>
-        /// 提取 UI 数据到 _config
-        /// </summary>
         private void CollectDataFromUI()
         {
             dgvExtra.EndEdit();
@@ -382,22 +415,91 @@ namespace MEPTools.MEPGroupTag
                     string num = new string(posStr.Where(char.IsDigit).ToArray());
                     gIdx = posStr.EndsWith("后") ? "After_" + num : num;
                 }
-                else if (posStr == "每一组前")
-                {
-                    gIdx = "*";
-                }
-                else if (posStr == "每一组后")
-                {
-                    gIdx = "*After";
-                }
+                else if (posStr == "每一组前") gIdx = "*";
+                else if (posStr == "每一组后") gIdx = "*After";
 
                 string tText = row.Cells["TagText"].Value?.ToString()?.Trim() ?? "";
-                string tSymbol = row.Cells["TagSymbolName"].Value?.ToString()?.Trim() ?? "";
+                string dSym = row.Cells["DuctTagSym"].Value?.ToString()?.Trim() ?? "";
+                string pSym = row.Cells["PipeTagSym"].Value?.ToString()?.Trim() ?? "";
+                string tSym = row.Cells["TrayTagSym"].Value?.ToString()?.Trim() ?? "";
                 
-                if (!string.IsNullOrEmpty(gIdx) && !string.IsNullOrEmpty(tText) && !string.IsNullOrEmpty(tSymbol))
+                if (!string.IsNullOrEmpty(gIdx) && !string.IsNullOrEmpty(tText))
                 {
-                    _config.ExtraRules.Add(new ExtraRowRule { GroupIndex = gIdx, TagText = tText, TagSymbolName = tSymbol });
+                    _config.ExtraRules.Add(new ExtraRowRule { 
+                        GroupIndex = gIdx, 
+                        TagText = tText, 
+                        DuctTagSymName = dSym,
+                        PipeTagSymName = pSym,
+                        CableTrayTagSymName = tSym
+                    });
                 }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 专属的搜索弹窗，超宽超大
+    /// </summary>
+    public class TagSearchForm : Form
+    {
+        public string SelectedResult { get; private set; }
+        private ListBox listBox;
+        private TextBox txtSearch;
+        private List<string> _allData;
+
+        public TagSearchForm(List<string> data)
+        {
+            _allData = data;
+            InitializeUI();
+        }
+
+        private void InitializeUI()
+        {
+            this.Text = "搜索 Tag 族";
+            this.ClientSize = new Size(600, 400);
+            this.StartPosition = FormStartPosition.CenterParent;
+            this.FormBorderStyle = FormBorderStyle.FixedDialog;
+            this.MaximizeBox = false;
+            this.MinimizeBox = false;
+
+            var lbl = new Label { Text = "输入关键字过滤 (双击下方选中并关闭):", Location = new Point(10, 10), AutoSize = true };
+            txtSearch = new TextBox { Location = new Point(10, 30), Width = 580 };
+            txtSearch.TextChanged += TxtSearch_TextChanged;
+
+            listBox = new ListBox { Location = new Point(10, 65), Size = new Size(580, 320), Font = new Font("Consolas", 10f) };
+            listBox.DoubleClick += ListBox_DoubleClick;
+
+            this.Controls.Add(lbl);
+            this.Controls.Add(txtSearch);
+            this.Controls.Add(listBox);
+
+            // 初始化列表
+            listBox.Items.AddRange(_allData.ToArray());
+        }
+
+        private void TxtSearch_TextChanged(object sender, EventArgs e)
+        {
+            string filter = txtSearch.Text.Trim().ToLower();
+            if (string.IsNullOrEmpty(filter))
+            {
+                listBox.Items.Clear();
+                listBox.Items.AddRange(_allData.ToArray());
+            }
+            else
+            {
+                var filtered = _allData.Where(s => s.ToLower().Contains(filter)).ToArray();
+                listBox.Items.Clear();
+                listBox.Items.AddRange(filtered);
+            }
+        }
+
+        private void ListBox_DoubleClick(object sender, EventArgs e)
+        {
+            if (listBox.SelectedItem != null)
+            {
+                SelectedResult = listBox.SelectedItem.ToString();
+                this.DialogResult = DialogResult.OK;
+                this.Close();
             }
         }
     }
