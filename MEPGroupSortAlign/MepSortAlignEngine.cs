@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.DB.Mechanical;
@@ -11,15 +10,18 @@ using Autodesk.Revit.UI.Selection;
 using System.Drawing;
 using Point = System.Drawing.Point;
 using WinForms = System.Windows.Forms;
-using MEPTools.Shared; // 引入共享类
+using MEPTools.Shared;
 
 namespace MEPTools.MEPGroupSortAlign
 {
-    [Transaction(TransactionMode.Manual)]
-    [Regeneration(RegenerationOption.Manual)]
-    public class Command : IExternalCommand
+    public enum AnchorMode
     {
-        private const double DefaultSpacingMM = 50.0;
+        AutoFirstExtreme,   // 自动对齐：globalAnchor = 所有组极值
+        UserPicked          // 指定基准：globalAnchor = 被点选元素的边缘
+    }
+
+    public sealed class MepSortAlignEngine
+    {
         private const double DefaultGroupToleranceMM = 25.0;
 
         private class MepGroup
@@ -34,33 +36,19 @@ namespace MEPTools.MEPGroupSortAlign
             public bool AllowReference(Reference reference, XYZ position) => true;
         }
 
-        public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
+        public Result Run(
+            UIDocument uiDoc,
+            List<Element> filteredElements,
+            double spacingInternal,
+            AnchorMode anchorMode,
+            ElementId pickedAnchorId,
+            string commandName)
         {
-            UIApplication uiApp = commandData.Application;
-            UIDocument uiDoc = uiApp.ActiveUIDocument;
-            Document doc = uiDoc.Document;
-
-            MEPLogger.Instance.StartSession("MEP分组排序对齐");
-
-            // ---------- 1. 使用通用方法获取预选或交互式选择的元素 ----------
-            List<Element> filteredElements = MEPSelectionHelper.GetElements(
-                uidoc: uiDoc,
-                filter: new MEPCurveSelectionFilter(),
-                pickPrompt: "请选择至少两个管道/风管/线槽，按空格键完成，按ESC取消",
-                infoTipNoPreselection: "请选择至少两个MEP元素，按空格键完成",
-                minCount: 2,
-                useSpaceKey: true);
-
-            if (filteredElements.Count < 2)
-            {
+            if (filteredElements == null || filteredElements.Count < 2)
                 return Result.Cancelled;
-            }
 
-            // ---------- 2. 询问净间距（WinForms 输入框） ----------
-            double spacingMM = PromptForValue("MEP分组排序对齐 - 输入净间距",
-                "请输入净间距（毫米）：按ESC取消视为默认50mm，按空格确认", DefaultSpacingMM);
-            double targetSpacingInternal = UnitUtils.ConvertToInternalUnits(
-                spacingMM, UnitTypeId.Millimeters);
+            Document doc = uiDoc.Document;
+            double spacingMM = UnitUtils.ConvertFromInternalUnits(spacingInternal, UnitTypeId.Millimeters);
 
             // ---------- 3. 确定排列方向 ----------
             Curve dirCurve = ((LocationCurve)filteredElements[0].Location).Curve;
@@ -81,10 +69,38 @@ namespace MEPTools.MEPGroupSortAlign
             // ---------- 4. 按底部标高分组 ----------
             List<MepGroup> groups = GroupByBottomElevation(filteredElements);
 
+            // 定位锚点所在组的索引
+            int anchorGroupIdx = -1;
+            if (anchorMode == AnchorMode.UserPicked)
+            {
+                if (pickedAnchorId == null)
+                {
+                    MEPLogger.Instance.EndSession("Failed: Anchor id is null.");
+                    return Result.Cancelled;
+                }
+                for (int gi = 0; gi < groups.Count; gi++)
+                {
+                    if (groups[gi].Elements.Any(e => e.Id == pickedAnchorId))
+                    {
+                        anchorGroupIdx = gi;
+                        break;
+                    }
+                }
+                if (anchorGroupIdx < 0)
+                {
+                    InfoCenterTip.Show("锚点元素不在已选择的元素集合内。");
+                    MEPLogger.Instance.EndSession("Failed: Anchor not found in selection.");
+                    return Result.Cancelled;
+                }
+            }
+
             // ---------- 5. 记录原始位置 ----------
             Dictionary<ElementId, XYZ> originalPositions = new Dictionary<ElementId, XYZ>();
             foreach (Element elem in filteredElements)
-                originalPositions[elem.Id] = ((LocationCurve)elem.Location).Curve.GetEndPoint(0);
+            {
+                Curve c = ((LocationCurve)elem.Location).Curve;
+                originalPositions[elem.Id] = (c.GetEndPoint(0) + c.GetEndPoint(1)) / 2.0;
+            }
 
             // ==================== 局部辅助函数 ====================
 
@@ -100,95 +116,173 @@ namespace MEPTools.MEPGroupSortAlign
             {
                 foreach (Element elem in filteredElements)
                 {
-                    XYZ cur = ((LocationCurve)elem.Location).Curve.GetEndPoint(0);
-                    XYZ delta = originalPositions[elem.Id] - cur;
+                    Curve c = ((LocationCurve)elem.Location).Curve;
+                    XYZ curMid = (c.GetEndPoint(0) + c.GetEndPoint(1)) / 2.0;
+                    XYZ delta = originalPositions[elem.Id] - curMid;
                     if (delta.GetLength() > 1e-9)
                         ElementTransformUtils.MoveElement(doc, elem.Id, delta);
                 }
             }
 
-            void ApplyArrangement(XYZ perpVec)
+            void ApplyArrangement(XYZ perpVec, bool isLeftAlign)
             {
-                var groupInfos =
-                    new List<(List<Element> sorted, List<double> curProj, List<double> targets)>();
+                var groupInfos = new List<(List<Element> sorted, List<double> curProj, List<double> targets, bool isAnchor)>();
 
-                foreach (var group in groups)
+                for (int gi = 0; gi < groups.Count; gi++)
                 {
+                    var group = groups[gi];
                     if (group.Elements.Count == 0) continue;
 
                     var sorted = group.Elements
-                        .OrderBy(e => ((LocationCurve)e.Location).Curve
-                            .GetEndPoint(0).DotProduct(perpVec))
+                        .OrderBy(e => originalPositions[e.Id].DotProduct(perpVec))
                         .ToList();
 
                     var curProj = sorted
-                        .Select(e => ((LocationCurve)e.Location).Curve
-                            .GetEndPoint(0).DotProduct(perpVec))
+                        .Select(e =>
+                        {
+                            Curve c = ((LocationCurve)e.Location).Curve;
+                            XYZ mid = (c.GetEndPoint(0) + c.GetEndPoint(1)) / 2.0;
+                            return mid.DotProduct(perpVec);
+                        })
                         .ToList();
 
-                    var targets = new List<double> { curProj[0] };
-                    for (int i = 1; i < sorted.Count; i++)
+                    bool isAnchor = (anchorMode == AnchorMode.UserPicked) && (gi == anchorGroupIdx);
+
+                    List<double> targets;
+                    if (isAnchor)
                     {
-                        double prevR = GetRadius(sorted[i - 1]);
-                        double curR = GetRadius(sorted[i]);
-                        targets.Add(targets[i - 1] + prevR + targetSpacingInternal + curR);
+                        // ★ 修复点1：锚点组保持原样绝对不动，不重排，完全避免由于拉扯产生的“线太短”错误
+                        targets = new List<double>(curProj);
+                    }
+                    else
+                    {
+                        // 其他组：按设定的间距正常重排（从左向右推）
+                        targets = new List<double> { curProj[0] };
+                        for (int i = 1; i < sorted.Count; i++)
+                        {
+                            double prevR = GetRadius(sorted[i - 1]);
+                            double curR = GetRadius(sorted[i]);
+                            targets.Add(targets[i - 1] + prevR + spacingInternal + curR);
+                        }
                     }
 
-                    groupInfos.Add((sorted, curProj, targets));
+                    groupInfos.Add((sorted, curProj, targets, isAnchor));
                 }
 
                 if (groupInfos.Count == 0) return;
 
-                double anchorProj = groupInfos.Select(g => g.curProj[0]).Min();
-
-                foreach (var (sorted, curProj, targets) in groupInfos)
+                double globalAnchor = 0;
+                if (anchorMode == AnchorMode.UserPicked)
                 {
-                    double delta = anchorProj - targets[0];
-                    for (int i = 0; i < sorted.Count; i++)
+                    var anchorInfo = groupInfos.First(x => x.isAnchor);
+                    // ★ 修复点2：找到你点选的那一根具体的管子，而不是整组
+                    int anchorIdx = anchorInfo.sorted.FindIndex(e => e.Id == pickedAnchorId);
+                    if (anchorIdx < 0) anchorIdx = 0;
+
+                    // ★ 修复点3：以被点选元素的边缘作为全局基准线
+                    if (isLeftAlign)
+                        globalAnchor = anchorInfo.targets[anchorIdx] - GetRadius(anchorInfo.sorted[anchorIdx]);
+                    else
+                        globalAnchor = anchorInfo.targets[anchorIdx] + GetRadius(anchorInfo.sorted[anchorIdx]);
+                }
+                else
+                {
+                    // 原版极值逻辑保留
+                    bool firstGroup = true;
+                    foreach (var info in groupInfos)
                     {
-                        double targetProj = targets[i] + delta;
-                        double move = targetProj - curProj[i];
+                        if (isLeftAlign)
+                        {
+                            double leftEdge = info.targets[0] - GetRadius(info.sorted[0]);
+                            if (firstGroup || leftEdge < globalAnchor)
+                            {
+                                globalAnchor = leftEdge;
+                                firstGroup = false;
+                            }
+                        }
+                        else
+                        {
+                            double rightEdge = info.targets.Last() + GetRadius(info.sorted.Last());
+                            if (firstGroup || rightEdge > globalAnchor)
+                            {
+                                globalAnchor = rightEdge;
+                                firstGroup = false;
+                            }
+                        }
+                    }
+                }
+
+                // 逐组应用平移
+                foreach (var info in groupInfos)
+                {
+                    double offset;
+                    if (info.isAnchor)
+                    {
+                        offset = 0;  // 锚点组自身不动（保留它的原始位置）
+                    }
+                    else if (isLeftAlign)
+                    {
+                        // 其他组：左边缘对齐到基准线
+                        offset = globalAnchor - info.targets[0] + GetRadius(info.sorted[0]);
+                    }
+                    else
+                    {
+                        // 其他组：右边缘对齐到基准线
+                        offset = globalAnchor - info.targets.Last() - GetRadius(info.sorted.Last());
+                    }
+
+                    for (int i = 0; i < info.sorted.Count; i++)
+                    {
+                        double targetProj = info.targets[i] + offset;
+                        double move = targetProj - info.curProj[i];
                         if (Math.Abs(move) > 1e-9)
-                            ElementTransformUtils.MoveElement(
-                                doc, sorted[i].Id, perpVec.Multiply(move));
+                        {
+                            ElementTransformUtils.MoveElement(doc, info.sorted[i].Id, perpVec.Multiply(move));
+                        }
                     }
                 }
             }
 
             // ==================== 事务组：预览 + 反向确认 ====================
-            using (TransactionGroup tg = new TransactionGroup(doc,
-                $"MEP分组排序对齐 {spacingMM:0.##}mm"))
+            using (TransactionGroup tg = new TransactionGroup(doc, $"{commandName} {spacingMM:0.##}mm"))
             {
                 tg.Start();
-                bool reversed = false;
+                bool isLeftAlign = true;
                 bool accepted = false;
 
                 while (!accepted)
                 {
-                    using (Transaction trans = new Transaction(doc, "MEP分组排序对齐"))
+                    using (Transaction trans = new Transaction(doc, commandName))
                     {
                         trans.Start();
+                        FailureHandlingOptions failOpt = trans.GetFailureHandlingOptions();
+                        failOpt.SetFailuresPreprocessor(new MepWarningSwallower());
+                        trans.SetFailureHandlingOptions(failOpt);
+
                         RestorePositions();
-                        ApplyArrangement(reversed ? perpVecBase.Negate() : perpVecBase);
+                        ApplyArrangement(perpVecBase, isLeftAlign);
                         trans.Commit();
                     }
 
-                    // 使用 WinForms 自定义确认界面
                     using (WinForms.Form form = new WinForms.Form())
                     {
-                        form.Text = "MEP分组排序对齐 - 结果确认";
+                        form.Text = $"{commandName} - 结果确认";
                         form.ClientSize = new Size(340, 160);
                         form.StartPosition = WinForms.FormStartPosition.CenterScreen;
                         form.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog;
                         form.MaximizeBox = false;
                         form.MinimizeBox = false;
                         form.ShowInTaskbar = false;
-                        form.KeyPreview = true; 
+                        form.KeyPreview = true;
+
+                        string tipText = anchorMode == AnchorMode.UserPicked 
+                            ? "· 基准组保持不动，空格切换其他组贴左/贴右\n" 
+                            : "· 按空格键 / 回车键 → 切换左/右对齐\n";
 
                         WinForms.Label lbl = new WinForms.Label
                         {
                             Text = $"已按净间距 {spacingMM:0.##} mm 排列（共 {groups.Count} 组）。\n\n" +
-                                   "· 按空格键 / 回车键 → 反向排列\n" +
+                                   tipText +
                                    "· 按ESC键 / 点击“完成” → 接受当前结果",
                             Location = new Point(15, 15),
                             AutoSize = true
@@ -196,7 +290,7 @@ namespace MEPTools.MEPGroupSortAlign
 
                         WinForms.Button reverseBtn = new WinForms.Button
                         {
-                            Text = "反向排列",
+                            Text = "反向对齐",
                             Location = new Point(135, 105),
                             Width = 80,
                             DialogResult = WinForms.DialogResult.Retry
@@ -214,15 +308,10 @@ namespace MEPTools.MEPGroupSortAlign
                         form.Controls.Add(reverseBtn);
                         form.Controls.Add(okBtn);
 
-                        // ===== 核心逻辑修改 =====
-                        // 1. 默认回车键 -> 触发“反向排列”
-                        form.AcceptButton = reverseBtn; 
-                        // 2. 默认 ESC 键 -> 触发“完成” (因为 OkBtn.DialogResult 为 OK)
-                        form.CancelButton = okBtn; 
-                        // 3. 默认焦点在“反向排列”上（如果用户直接按空格触发）
-                        form.ActiveControl = reverseBtn; 
+                        form.AcceptButton = reverseBtn;
+                        form.CancelButton = okBtn;
+                        form.ActiveControl = reverseBtn;
 
-                        // 4. 捕获空格键，强制绑定给“反向排列”
                         form.KeyDown += (s, e) =>
                         {
                             if (e.KeyCode == WinForms.Keys.Space)
@@ -236,8 +325,8 @@ namespace MEPTools.MEPGroupSortAlign
 
                         if (res == WinForms.DialogResult.Retry)
                         {
-                            reversed = !reversed;
-                            MEPLogger.Instance.AppendLine("用户选择了反向排列。");
+                            isLeftAlign = !isLeftAlign;
+                            MEPLogger.Instance.AppendLine($"用户切换为：{(isLeftAlign ? "左对齐" : "右对齐")}。");
                         }
                         else
                         {
@@ -250,7 +339,7 @@ namespace MEPTools.MEPGroupSortAlign
                 tg.Assimilate();
             }
 
-            InfoCenterTip.Show("MEP分组排序对齐完成");
+            InfoCenterTip.Show($"{commandName}完成");
             MEPLogger.Instance.EndSession("Success: Alignment completed.");
             return Result.Succeeded;
         }
@@ -286,8 +375,7 @@ namespace MEPTools.MEPGroupSortAlign
                 .Min();
 
             double toleranceMM = Math.Min(DefaultGroupToleranceMM, minSizeMM);
-            double toleranceInternal = UnitUtils.ConvertToInternalUnits(
-                toleranceMM, UnitTypeId.Millimeters);
+            double toleranceInternal = UnitUtils.ConvertToInternalUnits(toleranceMM, UnitTypeId.Millimeters);
 
             var sorted = elements
                 .OrderBy(e => GetBottomElevationInternal(e) ?? 0)
@@ -314,8 +402,7 @@ namespace MEPTools.MEPGroupSortAlign
         }
 
         // ==================== 输入框 ====================
-
-        private static double PromptForValue(string title, string prompt, double defaultValue)
+        public static double PromptForValue(string title, string prompt, double defaultValue)
         {
             double result = defaultValue;
 
@@ -389,6 +476,22 @@ namespace MEPTools.MEPGroupSortAlign
             }
 
             return result;
+        }
+    }
+
+    public class MepWarningSwallower : IFailuresPreprocessor
+    {
+        public FailureProcessingResult PreprocessFailures(FailuresAccessor failuresAccessor)
+        {
+            IList<FailureMessageAccessor> failures = failuresAccessor.GetFailureMessages();
+            foreach (FailureMessageAccessor f in failures)
+            {
+                if (f.GetSeverity() == FailureSeverity.Warning)
+                {
+                    failuresAccessor.DeleteWarning(f);
+                }
+            }
+            return FailureProcessingResult.Continue;
         }
     }
 }
