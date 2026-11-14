@@ -151,12 +151,27 @@ namespace MEPTools.MEPGroupSortAlign
                     List<double> targets;
                     if (isAnchor)
                     {
-                        // ★ 修复点1：锚点组保持原样绝对不动，不重排，完全避免由于拉扯产生的“线太短”错误
-                        targets = new List<double>(curProj);
+                        // ★ 修复：锚点组不仅不平移，组内还要以点选元素为基准进行排布
+                        int anchorIdx = sorted.FindIndex(e => e.Id == pickedAnchorId);
+                        if (anchorIdx < 0) anchorIdx = 0;
+
+                        targets = new List<double>(new double[sorted.Count]);
+                        targets[anchorIdx] = curProj[anchorIdx]; // 点选元素绝对不动
+
+                        // 向右侧（正向）推开
+                        for (int i = anchorIdx + 1; i < sorted.Count; i++)
+                        {
+                            targets[i] = targets[i - 1] + GetRadius(sorted[i - 1]) + spacingInternal + GetRadius(sorted[i]);
+                        }
+                        // 向左侧（反向）推开
+                        for (int i = anchorIdx - 1; i >= 0; i--)
+                        {
+                            targets[i] = targets[i + 1] - GetRadius(sorted[i + 1]) - spacingInternal - GetRadius(sorted[i]);
+                        }
                     }
                     else
                     {
-                        // 其他组：按设定的间距正常重排（从左向右推）
+                        // 其他组：按设定的间距正常重排
                         targets = new List<double> { curProj[0] };
                         for (int i = 1; i < sorted.Count; i++)
                         {
@@ -175,19 +190,19 @@ namespace MEPTools.MEPGroupSortAlign
                 if (anchorMode == AnchorMode.UserPicked)
                 {
                     var anchorInfo = groupInfos.First(x => x.isAnchor);
-                    // ★ 修复点2：找到你点选的那一根具体的管子，而不是整组
                     int anchorIdx = anchorInfo.sorted.FindIndex(e => e.Id == pickedAnchorId);
                     if (anchorIdx < 0) anchorIdx = 0;
 
-                    // ★ 修复点3：以被点选元素的边缘作为全局基准线
+                    // 以被点选元素的边缘作为全局基准线
                     if (isLeftAlign)
                         globalAnchor = anchorInfo.targets[anchorIdx] - GetRadius(anchorInfo.sorted[anchorIdx]);
                     else
                         globalAnchor = anchorInfo.targets[anchorIdx] + GetRadius(anchorInfo.sorted[anchorIdx]);
+                    
+                    MEPLogger.Instance.AppendLine($"基准线位置: {globalAnchor:0.###} (点选元素在组内索引: {anchorIdx})");
                 }
                 else
                 {
-                    // 原版极值逻辑保留
                     bool firstGroup = true;
                     foreach (var info in groupInfos)
                     {
@@ -213,41 +228,72 @@ namespace MEPTools.MEPGroupSortAlign
                 }
 
                 // 逐组应用平移
-                foreach (var info in groupInfos)
+                for (int gi = 0; gi < groupInfos.Count; gi++)
                 {
+                    var info = groupInfos[gi];
                     double offset;
                     if (info.isAnchor)
                     {
-                        offset = 0;  // 锚点组自身不动（保留它的原始位置）
+                        offset = 0;  // 锚点组整体偏移量为 0
                     }
                     else if (isLeftAlign)
                     {
-                        // 其他组：左边缘对齐到基准线
                         offset = globalAnchor - info.targets[0] + GetRadius(info.sorted[0]);
                     }
                     else
                     {
-                        // 其他组：右边缘对齐到基准线
                         offset = globalAnchor - info.targets.Last() - GetRadius(info.sorted.Last());
                     }
 
+                    bool groupMoved = false;
                     for (int i = 0; i < info.sorted.Count; i++)
                     {
                         double targetProj = info.targets[i] + offset;
                         double move = targetProj - info.curProj[i];
-                        if (Math.Abs(move) > 1e-9)
+                        if (Math.Abs(move) > 1e-4)
                         {
                             ElementTransformUtils.MoveElement(doc, info.sorted[i].Id, perpVec.Multiply(move));
+                            groupMoved = true;
                         }
                     }
+                    
+                    MEPLogger.Instance.AppendLine($"组 {gi + 1} {(info.isAnchor ? "(锚点组)" : "")}: 计算出偏移量 {offset:0.###} mm，实际移动: {groupMoved}");
                 }
             }
 
-            // ==================== 事务组：预览 + 反向确认 ====================
+            // ==================== 事务组：预览 + 确认 ====================
             using (TransactionGroup tg = new TransactionGroup(doc, $"{commandName} {spacingMM:0.##}mm"))
             {
                 tg.Start();
-                bool isLeftAlign = true;
+                
+                // 根据用户点选位置智能判断初始对齐方向
+                bool isLeftAlign = true; 
+                if (anchorMode == AnchorMode.UserPicked && pickedAnchorId != null)
+                {
+                    Element anchorElem = filteredElements.FirstOrDefault(e => e.Id == pickedAnchorId);
+                    if (anchorElem != null)
+                    {
+                        double anchorProj = originalPositions[anchorElem.Id].DotProduct(perpVecBase);
+                        var anchorGroup = groups.FirstOrDefault(g => g.Elements.Contains(anchorElem));
+                        if (anchorGroup != null)
+                        {
+                            double minProj = double.MaxValue;
+                            double maxProj = double.MinValue;
+                            foreach (var e in anchorGroup.Elements)
+                            {
+                                double p = originalPositions[e.Id].DotProduct(perpVecBase);
+                                minProj = Math.Min(minProj, p - GetRadius(e));
+                                maxProj = Math.Max(maxProj, p + GetRadius(e));
+                            }
+                            double groupCenter = (minProj + maxProj) / 2.0;
+                            
+                            // 如果点选的元素在组中心点右侧，则自动判定为右对齐；反之贴左
+                            isLeftAlign = (anchorProj <= groupCenter);
+                            MEPLogger.Instance.AppendLine($"智能判断方向: {(isLeftAlign ? "左对齐" : "右对齐")} (锚点投影: {anchorProj:0.###}, 组中心: {groupCenter:0.###})");
+                        }
+                    }
+                }
+
                 bool accepted = false;
 
                 while (!accepted)
@@ -264,74 +310,82 @@ namespace MEPTools.MEPGroupSortAlign
                         trans.Commit();
                     }
 
-                    using (WinForms.Form form = new WinForms.Form())
+                    // 指定基准模式直接跳过弹窗，静默结束
+                    if (anchorMode == AnchorMode.UserPicked)
                     {
-                        form.Text = $"{commandName} - 结果确认";
-                        form.ClientSize = new Size(340, 160);
-                        form.StartPosition = WinForms.FormStartPosition.CenterScreen;
-                        form.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog;
-                        form.MaximizeBox = false;
-                        form.MinimizeBox = false;
-                        form.ShowInTaskbar = false;
-                        form.KeyPreview = true;
-
-                        string tipText = anchorMode == AnchorMode.UserPicked 
-                            ? "· 基准组保持不动，空格切换其他组贴左/贴右\n" 
-                            : "· 按空格键 / 回车键 → 切换左/右对齐\n";
-
-                        WinForms.Label lbl = new WinForms.Label
+                        accepted = true;
+                        MEPLogger.Instance.AppendLine("指定基准对齐已自动完成，无需用户确认。");
+                    }
+                    else
+                    {
+                        // 自动对齐模式：保留原有确认弹窗
+                        using (WinForms.Form form = new WinForms.Form())
                         {
-                            Text = $"已按净间距 {spacingMM:0.##} mm 排列（共 {groups.Count} 组）。\n\n" +
-                                   tipText +
-                                   "· 按ESC键 / 点击“完成” → 接受当前结果",
-                            Location = new Point(15, 15),
-                            AutoSize = true
-                        };
+                            form.Text = $"{commandName} - 结果确认";
+                            form.ClientSize = new Size(340, 160);
+                            form.StartPosition = WinForms.FormStartPosition.CenterScreen;
+                            form.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog;
+                            form.MaximizeBox = false;
+                            form.MinimizeBox = false;
+                            form.ShowInTaskbar = false;
+                            form.KeyPreview = true;
 
-                        WinForms.Button reverseBtn = new WinForms.Button
-                        {
-                            Text = "反向对齐",
-                            Location = new Point(135, 105),
-                            Width = 80,
-                            DialogResult = WinForms.DialogResult.Retry
-                        };
+                            string tipText = "· 按空格键 / 回车键 → 切换左/右对齐\n";
 
-                        WinForms.Button okBtn = new WinForms.Button
-                        {
-                            Text = "完成",
-                            Location = new Point(225, 105),
-                            Width = 80,
-                            DialogResult = WinForms.DialogResult.OK
-                        };
-
-                        form.Controls.Add(lbl);
-                        form.Controls.Add(reverseBtn);
-                        form.Controls.Add(okBtn);
-
-                        form.AcceptButton = reverseBtn;
-                        form.CancelButton = okBtn;
-                        form.ActiveControl = reverseBtn;
-
-                        form.KeyDown += (s, e) =>
-                        {
-                            if (e.KeyCode == WinForms.Keys.Space)
+                            WinForms.Label lbl = new WinForms.Label
                             {
-                                form.DialogResult = WinForms.DialogResult.Retry;
-                                form.Close();
+                                Text = $"已按净间距 {spacingMM:0.##} mm 排列（共 {groups.Count} 组）。\n\n" +
+                                       tipText +
+                                       "· 按ESC键 / 点击“完成” → 接受当前结果",
+                                Location = new Point(15, 15),
+                                AutoSize = true
+                            };
+
+                            WinForms.Button reverseBtn = new WinForms.Button
+                            {
+                                Text = "反向对齐",
+                                Location = new Point(135, 105),
+                                Width = 80,
+                                DialogResult = WinForms.DialogResult.Retry
+                            };
+
+                            WinForms.Button okBtn = new WinForms.Button
+                            {
+                                Text = "完成",
+                                Location = new Point(225, 105),
+                                Width = 80,
+                                DialogResult = WinForms.DialogResult.OK
+                            };
+
+                            form.Controls.Add(lbl);
+                            form.Controls.Add(reverseBtn);
+                            form.Controls.Add(okBtn);
+
+                            form.AcceptButton = reverseBtn;
+                            form.CancelButton = okBtn;
+                            form.ActiveControl = reverseBtn;
+
+                            form.KeyDown += (s, e) =>
+                            {
+                                if (e.KeyCode == WinForms.Keys.Space)
+                                {
+                                    form.DialogResult = WinForms.DialogResult.Retry;
+                                    form.Close();
+                                }
+                            };
+
+                            WinForms.DialogResult res = form.ShowDialog();
+
+                            if (res == WinForms.DialogResult.Retry)
+                            {
+                                isLeftAlign = !isLeftAlign;
+                                MEPLogger.Instance.AppendLine($"用户手动切换为：{(isLeftAlign ? "左对齐" : "右对齐")}。");
                             }
-                        };
-
-                        WinForms.DialogResult res = form.ShowDialog();
-
-                        if (res == WinForms.DialogResult.Retry)
-                        {
-                            isLeftAlign = !isLeftAlign;
-                            MEPLogger.Instance.AppendLine($"用户切换为：{(isLeftAlign ? "左对齐" : "右对齐")}。");
-                        }
-                        else
-                        {
-                            accepted = true;
-                            MEPLogger.Instance.AppendLine("用户接受了当前排列结果。");
+                            else
+                            {
+                                accepted = true;
+                                MEPLogger.Instance.AppendLine("用户接受了当前排列结果。");
+                            }
                         }
                     }
                 }

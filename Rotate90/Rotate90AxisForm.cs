@@ -9,7 +9,6 @@ using MEPTools.Shared;
 // ⭐ 显式别名，消除歧义
 using WinColor   = System.Drawing.Color;
 using WinControl = System.Windows.Forms.Control;
-using RevitView  = Autodesk.Revit.DB.View;
 
 namespace MEPTools.Rotate90ByAxis
 {
@@ -35,10 +34,10 @@ namespace MEPTools.Rotate90ByAxis
             _targets = targets;
             _center = center;
 
-            RevitView view = _doc.ActiveView;
-            _axisPlanar = view.ViewDirection;
-            _axisFlipV  = view.RightDirection;
-            _axisFlipH  = view.UpDirection;
+            // ⭐ 固定使用世界坐标轴（俯视图 Z轴，正视图 X轴，侧视图 Y轴）
+            _axisPlanar = XYZ.BasisZ;
+            _axisFlipV  = XYZ.BasisX;
+            _axisFlipH  = XYZ.BasisY;
 
             // ---------- 窗体基础设置 ----------
             Text = "90° 旋转物体";
@@ -78,7 +77,7 @@ namespace MEPTools.Rotate90ByAxis
             // 2. 旋转方向单选组
             var axisGroup = new GroupBox
             {
-                Text = "旋转方向（以当前视图为准）",
+                Text = "旋转方向（固定世界轴）",
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 Padding = new Padding(10, 10, 10, 10),
@@ -92,10 +91,9 @@ namespace MEPTools.Rotate90ByAxis
                 Dock = DockStyle.Fill
             };
 
-            // ⭐ 增加 (1) (2) (3) 文字提示
-            _rbPlanar = new RadioButton { Text = "(1) ⟲  平面旋转（屏幕上转圈）", AutoSize = true, Checked = true, Margin = new Padding(3, 5, 3, 5) };
-            _rbFlipV  = new RadioButton { Text = "(2) ⇅  左右翻转（上下翻）",   AutoSize = true, Margin = new Padding(3, 5, 3, 5) };
-            _rbFlipH  = new RadioButton { Text = "(3) ⇄  上下翻转（前后翻）",   AutoSize = true, Margin = new Padding(3, 5, 3, 5) };
+            _rbPlanar = new RadioButton { Text = "(1) ⟲  平面旋转（绕世界 Z 轴）", AutoSize = true, Checked = true, Margin = new Padding(3, 5, 3, 5) };
+            _rbFlipV  = new RadioButton { Text = "(2) ⇅  左右翻转（绕世界 X 轴）",   AutoSize = true, Margin = new Padding(3, 5, 3, 5) };
+            _rbFlipH  = new RadioButton { Text = "(3) ⇄  上下翻转（绕世界 Y 轴）",   AutoSize = true, Margin = new Padding(3, 5, 3, 5) };
 
             axisLayout.Controls.AddRange(new WinControl[] { _rbPlanar, _rbFlipV, _rbFlipH });
             axisGroup.Controls.Add(axisLayout);
@@ -153,7 +151,7 @@ namespace MEPTools.Rotate90ByAxis
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
-            // ⭐ 拦截 1、2、3 及小键盘 1、2、3，切换对应选项
+            // 拦截 1、2、3 及小键盘 1、2、3，切换对应选项
             if (keyData == Keys.D1 || keyData == Keys.NumPad1)
             {
                 _rbPlanar.Checked = true;
@@ -185,11 +183,11 @@ namespace MEPTools.Rotate90ByAxis
         private void UpdateEffectLabel()
         {
             if (_rbPlanar.Checked)
-                _effectLabel.Text = "效果：元素绕屏幕中心原地转向（绕视线轴，转向后仍在同一平面内）";
+                _effectLabel.Text = "效果：元素绕世界 Z 轴原地水平旋转";
             else if (_rbFlipV.Checked)
-                _effectLabel.Text = "效果：元素像翻跟头一样上下颠倒（绕屏幕水平轴）";
+                _effectLabel.Text = "效果：元素绕世界 X 轴上下翻转";
             else
-                _effectLabel.Text = "效果：元素像门绕竖轴打开一样左右转向（绕屏幕竖直轴）";
+                _effectLabel.Text = "效果：元素绕世界 Y 轴左右翻转";
         }
 
         private XYZ GetAxisDirection()
@@ -211,13 +209,14 @@ namespace MEPTools.Rotate90ByAxis
             XYZ axisDir = GetAxisDirection();
             if (axisDir == null || axisDir.GetLength() < 1e-9)
             {
-                InfoCenterTip.Show("当前视图方向无效，无法确定旋转轴");
+                InfoCenterTip.Show("当前旋转轴无效，无法执行旋转");
                 return;
             }
             Line axis = Line.CreateUnbound(_center, axisDir);
 
             bool anyRotated = false;
-            int skippedOwner = 0, skippedParallel = 0;
+            int skippedOwner = 0;
+            // ⭐ [修改点1] 移除 skippedParallel 变量
             string currentUser = _doc.Application.Username;
 
             using (Transaction trans = new Transaction(_doc, "Rotate 90°"))
@@ -234,15 +233,17 @@ namespace MEPTools.Rotate90ByAxis
                         continue;
                     }
 
-                    if (elem.Location is LocationCurve lc && lc.Curve is Line line)
-                    {
-                        if (Math.Abs(line.Direction.DotProduct(axisDir)) > 0.99)
-                        {
-                            skippedParallel++;
-                            MEPLogger.Instance.AppendLine($"跳过 {elem.Id}（绕自身轴向旋转无可见变化）");
-                            continue;
-                        }
-                    }
+                    // ⭐ [修改点2] 注释/移除了对轴向平行的跳过逻辑
+                    // 原因：矩形风管等元素自身有不同面，绕自身平行轴旋转依然有实际意义
+                    // if (elem.Location is LocationCurve lc && lc.Curve is Line line)
+                    // {
+                    //     if (Math.Abs(line.Direction.DotProduct(axisDir)) > 0.99)
+                    //     {
+                    //         skippedParallel++;
+                    //         MEPLogger.Instance.AppendLine($"跳过 {elem.Id}（绕自身轴向旋转无可见变化）");
+                    //         continue;
+                    //     }
+                    // }
 
                     try
                     {
@@ -265,10 +266,7 @@ namespace MEPTools.Rotate90ByAxis
                 InfoCenterTip.Show($"已{GetAxisName()} 90°");
                 MEPLogger.Instance.AppendLine($"{GetAxisName()} 90° 完成");
             }
-            else if (skippedParallel > 0 && skippedOwner == 0)
-            {
-                InfoCenterTip.Show("当前方向与元素自身轴向平行，旋转无明显变化，请切换其它方向");
-            }
+            // ⭐ [修改点3] 移除了 skippedParallel 的分支判断，直接返回无旋转提示
             else
             {
                 InfoCenterTip.Show("没有可旋转的元素（可能被他人拥有或旋转失败）");

@@ -42,13 +42,13 @@ namespace MEPTools.Rotate90
                 try { uidoc.Selection.SetElementIds(new List<ElementId>()); } catch { }
 
                 // ---------- 2. 再选择参考元素（用于提取旋转轴） ----------
-                // 过滤器会排除已选的目标元素
-                var refFilter = new ReferenceElementSelectionFilter(targets);
+                // ⭐ [修改点1] 构造函数不传 targets，允许用户选择自身作为旋转轴参考
+                var refFilter = new ReferenceElementSelectionFilter();
                 List<Element> refList = MEPSelectionHelper.GetElements(
                     uidoc,
                     refFilter,
                     "请选择参考元素（其轴线将作为旋转轴）",
-                    infoTipNoPreselection: "请选择管道、风管、墙或设备等可作为旋转参考的元素",
+                    infoTipNoPreselection: "可选择目标元素自身，或管道、风管、墙等作为参考",
                     minCount: 1,
                     useSpaceKey: false,
                     singlePick: true);
