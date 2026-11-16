@@ -40,7 +40,6 @@ namespace MEPTools.WorksetManager
                 return Result.Cancelled;
             }
 
-            // ⭐ 修复：IsViewTemplate → IsTemplate
             if (view.IsTemplate)
             {
                 InfoCenterTip.Show("当前视图是视图模板，无法设置工作集可见性");
@@ -57,7 +56,6 @@ namespace MEPTools.WorksetManager
 
             try
             {
-                // ⭐ 修复：用 FilteredWorksetCollector 替代 table.GetWorksets()
                 IList<Workset> allWorksets = new FilteredWorksetCollector(doc)
                     .OfKind(WorksetKind.UserWorkset)
                     .ToWorksets();
@@ -136,12 +134,20 @@ namespace MEPTools.WorksetManager
                     {
                         if (ws.Id == targetWorksetId)
                         {
-                            view.SetWorksetVisibility(ws.Id, WorksetVisibility.Visible);
+                            // ⭐ 性能优化：先 Get 判断，已是目标状态则跳过 Set
+                            if (view.GetWorksetVisibility(ws.Id) != WorksetVisibility.Visible)
+                            {
+                                view.SetWorksetVisibility(ws.Id, WorksetVisibility.Visible);
+                            }
                         }
                         else
                         {
-                            view.SetWorksetVisibility(ws.Id, WorksetVisibility.Hidden);
-                            hiddenCount++;
+                            // ⭐ 性能优化：先 Get 判断，已是目标状态则跳过 Set
+                            if (view.GetWorksetVisibility(ws.Id) != WorksetVisibility.Hidden)
+                            {
+                                view.SetWorksetVisibility(ws.Id, WorksetVisibility.Hidden);
+                            }
+                            hiddenCount++; // 计数语义保持不变
                         }
                     }
 

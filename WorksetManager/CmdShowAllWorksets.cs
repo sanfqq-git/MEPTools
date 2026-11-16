@@ -86,8 +86,13 @@ namespace MEPTools.WorksetManager
                     trans.Start();
                     foreach (Workset ws in allWorksets)
                     {
-                        view.SetWorksetVisibility(ws.Id, WorksetVisibility.UseGlobalSetting);
-                        resetCount++;
+                        // ⭐ 性能优化：先 Get 判断，已是目标状态则跳过 Set，
+                        //    避免无意义地创建 Undo 记录和文档修改。
+                        if (view.GetWorksetVisibility(ws.Id) != WorksetVisibility.UseGlobalSetting)
+                        {
+                            view.SetWorksetVisibility(ws.Id, WorksetVisibility.UseGlobalSetting);
+                        }
+                        resetCount++; // 计数语义保持不变
                     }
 
                     if (trans.Commit() != TransactionStatus.Committed)

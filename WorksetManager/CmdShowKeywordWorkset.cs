@@ -95,7 +95,6 @@ namespace MEPTools.WorksetManager
                 }
 
                 // ================= 读取记忆并弹窗 =================
-                // 读取之前保存的工作集名称列表
                 string lastConfig = MEPConfig.GetString(ConfigKeyLastSelection, string.Empty);
                 List<string> lastSelected = string.IsNullOrEmpty(lastConfig)
                     ? new List<string>()
@@ -145,12 +144,20 @@ namespace MEPTools.WorksetManager
                     {
                         if (selectedSet.Contains(ws.Name))
                         {
-                            view.SetWorksetVisibility(ws.Id, WorksetVisibility.Visible);
+                            // ⭐ 性能优化：先 Get 判断，避免无意义的 Set
+                            if (view.GetWorksetVisibility(ws.Id) != WorksetVisibility.Visible)
+                            {
+                                view.SetWorksetVisibility(ws.Id, WorksetVisibility.Visible);
+                            }
                             visibleCount++;
                         }
                         else
                         {
-                            view.SetWorksetVisibility(ws.Id, WorksetVisibility.Hidden);
+                            // ⭐ 性能优化：先 Get 判断，避免无意义的 Set
+                            if (view.GetWorksetVisibility(ws.Id) != WorksetVisibility.Hidden)
+                            {
+                                view.SetWorksetVisibility(ws.Id, WorksetVisibility.Hidden);
+                            }
                             hiddenCount++;
                         }
                     }

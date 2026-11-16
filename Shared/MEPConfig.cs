@@ -48,6 +48,25 @@ namespace MEPTools.Shared
             new KeyValuePair<string,string>("TagGroup.LineSpacing",            "200.0"),
             new KeyValuePair<string,string>("TagGroup.BlankLines",             "2"),
             new KeyValuePair<string,string>("TagGroup.ExtraRules",             ""),
+
+            // ================= ExportLocal：LINK/BIM360 输出到本地 =================
+            new KeyValuePair<string,string>("ExportLocal.LinkedSubFolder",      "LinkedModels"),
+            new KeyValuePair<string,string>("ExportLocal.CloudSubFolder",       "CloudModels"),
+            new KeyValuePair<string,string>("ExportLocal.CopyLocalSource",      "true"),
+            new KeyValuePair<string,string>("ExportLocal.SaveCurrentCloudModel","true"),
+            new KeyValuePair<string,string>("ExportLocal.OverwriteExisting",    "false"),
+
+            new KeyValuePair<string,string>("ExportLocal.Msg.SummaryTitle",     "输出 LINK / BIM360 文件到本地"),
+            new KeyValuePair<string,string>("ExportLocal.Msg.SummaryBody",
+                "输出完成。\n成功: {0}\n失败: {1}\n跳过: {2}\n\n输出目录:\n{3}"),
+            new KeyValuePair<string,string>("ExportLocal.Msg.CurrentCloudAsLocal",
+                "当前云模型已另存为本地副本：\n{0}\n\n注意：当前文档现已切换为本地文档。\n如需继续编辑原云文档，请从 BIM360/ACC 重新打开。"),
+            new KeyValuePair<string,string>("ExportLocal.Msg.NoLinks",
+                "当前文档中没有链接模型，仅处理当前文档本身。"),
+            new KeyValuePair<string,string>("ExportLocal.Msg.Failed",
+                "输出 LINK / BIM360 文件失败，请查看日志。"),
+            new KeyValuePair<string,string>("ExportLocal.Msg.CancelledFolder",
+                "未选择输出目录，操作已取消。"),
         };
 
         private static void EnsureLoaded()
@@ -68,7 +87,7 @@ namespace MEPTools.Shared
             string dir = null;
             try
             {
-                // 👇 核心修复：强制写入到 LocalAppData，避开 C 盘 Program Files 权限问题 👇
+                // 核心修复：强制写入到 LocalAppData，避开 C 盘 Program Files 权限问题
                 dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MEPTools");
                 if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
             }
@@ -151,6 +170,18 @@ namespace MEPTools.Shared
             return int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? v : fallback;
         }
 
+        /// <summary>
+        /// 读取布尔值，支持 "true"/"false" 以及 "1"/"0"。
+        /// </summary>
+        public static bool GetBool(string key, bool fallback)
+        {
+            string s = GetString(key);
+            if (string.IsNullOrEmpty(s)) return fallback;
+            if (bool.TryParse(s, out var b)) return b;
+            if (int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var i)) return i != 0;
+            return fallback;
+        }
+
         public static string[] GetStringArray(string key, char separator, string[] fallback)
         {
             string s = GetString(key);
@@ -190,12 +221,12 @@ namespace MEPTools.Shared
                     sb.AppendLine("# 缺失项将自动使用程序内置默认值");
                     sb.AppendLine("# =================================================");
                     sb.AppendLine();
-                    
+
                     foreach (var kv in _values)
                     {
                         sb.AppendLine(kv.Key + "=" + kv.Value);
                     }
-                    
+
                     File.WriteAllText(_configPath, sb.ToString(), new UTF8Encoding(false));
                     return true;
                 }

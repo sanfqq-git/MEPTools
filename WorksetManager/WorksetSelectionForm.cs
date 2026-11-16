@@ -38,11 +38,20 @@ namespace MEPTools.WorksetManager
                 HorizontalScrollbar = true
             };
 
-            // 按名称排序并添加，同时恢复上次勾选状态
-            foreach (var ws in allWorksets.OrderBy(w => w.Name))
+            // ⭐ 性能优化：BeginUpdate/EndUpdate 抑制逐项重绘，
+            //    排序逻辑与比较器保持与原版本一致，不改变显示顺序。
+            _clbWorksets.BeginUpdate();
+            try
             {
-                bool isChecked = checkedSet.Contains(ws.Name);
-                _clbWorksets.Items.Add(ws.Name, isChecked);
+                foreach (var ws in allWorksets.OrderBy(w => w.Name))
+                {
+                    bool isChecked = checkedSet.Contains(ws.Name);
+                    _clbWorksets.Items.Add(ws.Name, isChecked);
+                }
+            }
+            finally
+            {
+                _clbWorksets.EndUpdate();
             }
 
             // 快捷按钮
@@ -72,9 +81,18 @@ namespace MEPTools.WorksetManager
 
         private void SetAllChecked(bool isChecked)
         {
-            for (int i = 0; i < _clbWorksets.Items.Count; i++)
+            // ⭐ 性能优化：批量勾选时抑制逐项刷新
+            _clbWorksets.BeginUpdate();
+            try
             {
-                _clbWorksets.SetItemChecked(i, isChecked);
+                for (int i = 0; i < _clbWorksets.Items.Count; i++)
+                {
+                    _clbWorksets.SetItemChecked(i, isChecked);
+                }
+            }
+            finally
+            {
+                _clbWorksets.EndUpdate();
             }
         }
     }

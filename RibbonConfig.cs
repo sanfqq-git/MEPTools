@@ -117,6 +117,44 @@ namespace MEPTools
                     CommandType = typeof(MEPTools.SyncRelinquish.Cmd_RelinquishNow),
                     PulldownGroup = "协同工具"
                 },
+
+                // ================= 9. 导出工具 (下拉菜单) =================
+                // 一键聚合入口
+                new ButtonConfig
+                {
+                    Id = "MEPTools.Btn_ExportAll",
+                    Text = "📦 一键打包全部",
+                    ToolTip = "一次性提取并打包（模型、CAD底图、外部图片）到指定目录",
+                    CommandType = typeof(MEPTools.ExportTools.ExportAllCommand),
+                    PulldownGroup = "导出工具"
+                },
+                // 独立模块：模型
+                new ButtonConfig
+                {
+                    Id = "MEPTools.Btn_ExportModels",
+                    Text = "导出 3D 模型",
+                    ToolTip = "仅提取主档案和选定的 LINK 模型（纯物理复制）",
+                    CommandType = typeof(MEPTools.ExportTools.ExportLinkedAndCloudModelsCommand),
+                    PulldownGroup = "导出工具"
+                },
+                // 独立模块：CAD
+                new ButtonConfig
+                {
+                    Id = "MEPTools.Btn_ExportCad",
+                    Text = "导出 CAD 底图",
+                    ToolTip = "仅提取项目中的外部 CAD 链接/导入文件",
+                    CommandType = typeof(MEPTools.ExportTools.ExportCadCommand),
+                    PulldownGroup = "导出工具"
+                },
+                // 独立模块：图片
+                new ButtonConfig
+                {
+                    Id = "MEPTools.Btn_ExportImages",
+                    Text = "导出 外部图片",
+                    ToolTip = "仅提取项目中的外部贴图/图片文件",
+                    CommandType = typeof(MEPTools.ExportTools.ExportImageCommand),
+                    PulldownGroup = "导出工具"
+                },
             };
         }
     }
