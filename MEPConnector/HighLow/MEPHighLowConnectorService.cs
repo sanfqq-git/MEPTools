@@ -129,8 +129,8 @@ namespace MEPTools.MEPConnector.HighLow
 
             try
             {
-                // 1. 强制断开连接
-                HighLowMEPAligner.DisconnectConnectors(b);
+                // 1. 仅断开 B 组"近端"连接器，保留远端原有连接 —— 修复"后端悬空"问题
+                HighLowMEPAligner.DisconnectConnectorsAt(b, bNear);
 
                 bCurve.Curve = Line.CreateBound(newStart, newEnd);
                 doc.Regenerate();

@@ -42,14 +42,16 @@ namespace MEPTools.MEPConnector.Spatial.Core
 
             try
             {
-                // 直接修改坐标，不用 MoveElement，避免触发拓扑保护导致斜角断裂
-                LocationCurve lcB = b.Location as LocationCurve;
-                XYZ newB0 = new XYZ(b0.X + moveVec.X, b0.Y + moveVec.Y, b0.Z);
-                XYZ newB1 = new XYZ(b1.X + moveVec.X, b1.Y + moveVec.Y, b1.Z);
-                lcB.Curve = Line.CreateBound(newB0, newB1);
+                // 【修复】使用 Revit 原生的元素移动方法，保证相连的管件（弯头、三通等）同步联动
+                // 如果因拓扑约束（如两端都硬性连接）导致 Revit 抛出异常，
+                // 应在外部捕获，或者在实际业务层先断开近端/远端连接再平移。
+                ElementTransformUtils.MoveElement(doc, b.Id, moveVec);
                 return true;
             }
-            catch { return false; }
+            catch 
+            { 
+                return false; 
+            }
         }
     }
 }

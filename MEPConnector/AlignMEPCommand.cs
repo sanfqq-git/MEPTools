@@ -113,7 +113,8 @@ namespace MEPTools.MEPConnector
         }
 
         /// <summary>
-        /// 最简对齐逻辑：不主动断连，优先改曲线，异常则整体平移。
+        /// 最简对齐逻辑：整体平移 B 组元素。
+        /// 废弃直接修改 LocationCurve 的做法，避免撕裂物理拓扑导致错位。
         /// </summary>
         private static bool AlignPairKeepConnections(Document doc, Element a, Element b, MEPLogger log)
         {
@@ -128,7 +129,12 @@ namespace MEPTools.MEPConnector
                 // 1. 方向计算及降维
                 XYZ dirA = new XYZ(la.Direction.X, la.Direction.Y, 0);
                 XYZ dirB = new XYZ(lb.Direction.X, lb.Direction.Y, 0);
-                if (dirA.GetLength() < 1e-6 || dirB.GetLength() < 1e-6) return false;
+                
+                if (dirA.GetLength() < 1e-6 || dirB.GetLength() < 1e-6) 
+                { 
+                    log.AppendLine("    [失败] 管线竖直或水平投影为零"); 
+                    return false; 
+                }
                 dirA = dirA.Normalize();
                 dirB = dirB.Normalize();
 
@@ -136,10 +142,7 @@ namespace MEPTools.MEPConnector
                 double cross = dirA.X * dirB.Y - dirA.Y * dirB.X;
                 if (Math.Abs(cross) > 1e-3) { log.AppendLine("    [失败] 两根管线不平行"); return false; }
 
-                // 3. 竖直判断
-                if (Math.Abs(dirA.Z) > 1 - 1e-3) { log.AppendLine("    [失败] 管线竖直"); return false; }
-
-                // 4. 计算法向平移量
+                // 3. 计算法向平移量
                 XYZ a0 = la.GetEndPoint(0);
                 XYZ b0 = lb.GetEndPoint(0);
                 XYZ b1 = lb.GetEndPoint(1);
@@ -154,32 +157,17 @@ namespace MEPTools.MEPConnector
                 XYZ moveVec = -normalA * dist;
                 log.AppendLine($"    [计算] 需平移距离: {Math.Abs(dist):F4}，向量: ({moveVec.X:F4}, {moveVec.Y:F4}, {moveVec.Z:F4})");
 
-                // 5. 最简尝试：直接修改 LocationCurve
+                // 4. 使用 Revit 原生方法整体平移，保留拓扑和相连管件
                 try
                 {
-                    LocationCurve lcB = b.Location as LocationCurve;
-                    XYZ newB0 = new XYZ(b0.X + moveVec.X, b0.Y + moveVec.Y, b0.Z);
-                    XYZ newB1 = new XYZ(b1.X + moveVec.X, b1.Y + moveVec.Y, b1.Z);
-                    lcB.Curve = Line.CreateBound(newB0, newB1);
-                    
-                    log.AppendLine("    [方式] 直接修改 LocationCurve 成功。");
+                    ElementTransformUtils.MoveElement(doc, b.Id, moveVec);
+                    log.AppendLine("    [方式] 整体平移 MoveElement 成功。");
                     return true;
                 }
-                catch (Exception exCurve)
+                catch (Exception exMove)
                 {
-                    // 6. 兜底尝试：MoveElement 整体平移
-                    log.AppendLine($"    [异常] 直接改曲线失败: {exCurve.Message}，尝试整体平移...");
-                    try
-                    {
-                        ElementTransformUtils.MoveElement(doc, b.Id, moveVec);
-                        log.AppendLine("    [方式] 整体平移 MoveElement 成功。");
-                        return true;
-                    }
-                    catch (Exception exMove)
-                    {
-                        log.AppendLine($"    [失败] 整体平移也失败: {exMove.Message}");
-                        return false;
-                    }
+                    log.AppendLine($"    [失败] 整体平移失败: {exMove.Message}");
+                    return false;
                 }
             }
             catch (Exception ex)
