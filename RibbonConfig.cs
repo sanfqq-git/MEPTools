@@ -24,8 +24,8 @@ namespace MEPTools
                 new ButtonConfig { Id = "MEPTools.Btn_HighLow45",                 Text = "高低连接 45°",         ToolTip = "有高差的两组MEP 元素，以固定 45° 斜段生成连接", CommandType = typeof(MEPTools.MEPConnector.HighLow.Command45Degree),    PulldownGroup = "连接工具" },
                 new ButtonConfig { Id = "MEPTools.Btn_HighLow90",                 Text = "高低连接 90°",         ToolTip = "有高差的两组MEP 元素，以纯垂直方式（90°）生成连接", CommandType = typeof(MEPTools.MEPConnector.HighLow.Command90Degree),    PulldownGroup = "连接工具" },
                 new ButtonConfig { Id = "MEPTools.Btn_HighLowCustom",             Text = "高低连接 自定义",      ToolTip = "有高差的两组MEP 元素，输入 1~90° 自定义角度生成连接", CommandType = typeof(MEPTools.MEPConnector.HighLow.CommandCustomAngle), PulldownGroup = "连接工具" },
-                new ButtonConfig { Id = "MEPTools.Btn_SpatialCollinear",           Text = "共线连接",         ToolTip = "同轴的两组MEP元素，直接延长并合并", CommandType = typeof(MEPTools.MEPConnector.Spatial.Commands.CollinearCommand), PulldownGroup = "连接工具" },
-                new ButtonConfig { Id = "MEPTools.Btn_SpatialCorner",              Text = "转角连接",         ToolTip = "不平行但有交点的两组MEP元素，延长并生成弯头", CommandType = typeof(MEPTools.MEPConnector.Spatial.Commands.CornerCommand), PulldownGroup = "连接工具" },
+                new ButtonConfig { Id = "MEPTools.Btn_SpatialCollinear",          Text = "共线连接",             ToolTip = "同轴的两组MEP元素，直接延长并合并", CommandType = typeof(MEPTools.MEPConnector.Spatial.Commands.CollinearCommand), PulldownGroup = "连接工具" },
+                new ButtonConfig { Id = "MEPTools.Btn_SpatialCorner",             Text = "转角连接",             ToolTip = "不平行但有交点的两组MEP元素，延长并生成弯头", CommandType = typeof(MEPTools.MEPConnector.Spatial.Commands.CornerCommand), PulldownGroup = "连接工具" },
                 new ButtonConfig { Id = "MEPTools.Btn_AlignMEP",                  Text = "共线对齐准备",         ToolTip = "将 B 组 MEP 元素在水平面上平移到 A 组轴线上（不合并），用于共线合并前的手动纠偏", CommandType = typeof(MEPTools.MEPConnector.AlignMEPCommand), PulldownGroup = "连接工具" },
 
                 // ================= 2. 选择工具 (下拉菜单) =================
@@ -74,11 +74,17 @@ namespace MEPTools
                 new ButtonConfig { Id = "MEPTools.Btn_Rotate90",                  Text = "90°旋转物体(参考轴)",  ToolTip = "绕参考轴旋转 90°", CommandType = typeof(MEPTools.Rotate90.Rotate90Command) },
                 new ButtonConfig { Id = "MEPTools.Btn_Rotate90ByView",            Text = "90°旋转物体(视图方向)",ToolTip = "按当前视图方向旋转或翻转 90°", CommandType = typeof(MEPTools.Rotate90ByAxis.Rotate90ByAxisCommand) },
 
-                // ================= 6. 工作集管理 =================
-                new ButtonConfig { Id = "MEPTools.Btn_ChangeWorkset",             Text = "改元素到默认工作集",   ToolTip = "将选中的 MEP 元素批量修改为当前文档的活动工作集", CommandType = typeof(MEPTools.WorksetManager.CmdChangeWorkset), PulldownGroup = "工作集管理" },
-                new ButtonConfig { Id = "MEPTools.Btn_SetDefaultWorkset",         Text = "提取并设为默认工作集", ToolTip = "选择参考元素，将其所属工作集提取并设为默认工作集", CommandType = typeof(MEPTools.WorksetManager.CmdSetDefaultWorkset), PulldownGroup = "工作集管理" },
+                // ================= 6. 工作集管理 - 可见性控制 (下拉菜单) =================
+                new ButtonConfig { Id = "MEPTools.Btn_HideWorkset",               Text = "仅隐藏当前工作集",     ToolTip = "选择参考元素，将其所属工作集在当前视图中隐藏", CommandType = typeof(MEPTools.WorksetManager.CmdHideWorkset), PulldownGroup = "工作集管理" },
+                new ButtonConfig { Id = "MEPTools.Btn_IsolateWorkset",            Text = "仅显示当前工作集",     ToolTip = "选择参考元素，在当前视图中仅显示其所属工作集、隐藏其他全部用户工作集", CommandType = typeof(MEPTools.WorksetManager.CmdIsolateWorkset), PulldownGroup = "工作集管理" },
+                new ButtonConfig { Id = "MEPTools.Btn_ShowAllWorksets",           Text = "显示所有工作集",       ToolTip = "将当前视图中所有用户工作集可见性恢复为【使用全局设置】", CommandType = typeof(MEPTools.WorksetManager.CmdShowAllWorksets), PulldownGroup = "工作集管理" },
+                new ButtonConfig { Id = "MEPTools.Btn_ShowKeywordWorkset",        Text = "显示指定工作集",       ToolTip = "弹窗勾选需要显示的工作集，其余在当前视图中隐藏（可记忆上次选择）", CommandType = typeof(MEPTools.WorksetManager.CmdShowKeywordWorkset), PulldownGroup = "工作集管理" },
 
-                // ================= 7. 协同工具 (下拉菜单) =================
+                // ================= 7. 工作集管理 - 内容调整 (下拉菜单) =================
+                new ButtonConfig { Id = "MEPTools.Btn_ChangeWorkset",             Text = "改元素到活动工作集",   ToolTip = "将选中的 MEP 元素批量修改为当前文档的活动工作集", CommandType = typeof(MEPTools.WorksetManager.CmdChangeWorkset), PulldownGroup = "工作集管理" },
+                new ButtonConfig { Id = "MEPTools.Btn_SetDefaultWorkset",         Text = "提取并设为默认工作集", ToolTip = "选择参考元素，将其所属工作集提取并设为文档活动（默认）工作集", CommandType = typeof(MEPTools.WorksetManager.CmdSetDefaultWorkset), PulldownGroup = "工作集管理" },
+
+                // ================= 8. 协同工具 (下拉菜单) =================
                 new ButtonConfig
                 {
                     Id = "MEPTools.Btn_SyncAndRelinquish",
