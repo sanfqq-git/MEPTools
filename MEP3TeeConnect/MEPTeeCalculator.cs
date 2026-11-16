@@ -128,6 +128,11 @@ namespace MEPTools.MEP3TeeConnect
                 double d = e.get_Parameter(BuiltInParameter.RBS_CURVE_DIAMETER_PARAM)?.AsDouble() ?? 0;
                 double w = e.get_Parameter(BuiltInParameter.RBS_CURVE_WIDTH_PARAM)?.AsDouble() ?? 0;
                 if (d > 1e-9 && w <= 1e-9) return 0; // 圆形无高度
+                // ★ 优化：直接读取 h，避免再走一次 GetDiameter 重复读取三参数。
+                // 行为等价：
+                //   矩形（w>0,h>0）→ h    ；w>0,h=0（异常）→ d    ；圆形已在上方拦截
+                double h = e.get_Parameter(BuiltInParameter.RBS_CURVE_HEIGHT_PARAM)?.AsDouble() ?? 0;
+                return (w > 1e-9 && h > 1e-9) ? h : d;
             }
             return GetDiameter(e, t);
         }
@@ -228,7 +233,8 @@ namespace MEPTools.MEP3TeeConnect
 
         /// <summary>
         /// 交点 ±100mm 内是否已有管件。
-        /// 优化：仅检测同专业（水/风）管件，过滤掉电气等其他专业；并通过容差排除极靠近边界的误报。
+        /// ★ 优化：在 FilteredElementCollector 阶段按专业类别预过滤（ElementCategoryFilter + LogicalOrFilter），
+        /// 避免把整个包围盒内的无关元素全部拉进内存再逐条判别；同时保留原有"仅同专业"的语义。
         /// </summary>
         public static bool CheckNearbyFitting(Document doc, XYZ planPt, double z,
             ElementId ignoreA, ElementId ignoreB, out string err)
@@ -239,29 +245,38 @@ namespace MEPTools.MEP3TeeConnect
                 new XYZ(planPt.X - r, planPt.Y - r, z - r),
                 new XYZ(planPt.X + r, planPt.Y + r, z + r));
 
-            var col = new FilteredElementCollector(doc)
-                .WherePasses(new BoundingBoxIntersectsFilter(outline))
-                .WhereElementIsNotElementType()
-                .ToElements();
-
             Element elemA = doc.GetElement(ignoreA);
             TeeElementType typeA = GetTeeType(elemA);
+
+            var collector = new FilteredElementCollector(doc)
+                .WherePasses(new BoundingBoxIntersectsFilter(outline));
+
+            // 按 typeA 预构造类别过滤器（与旧逻辑完全等价）
+            var catFilters = new List<ElementFilter>(4);
+            if (typeA == TeeElementType.Pipe || typeA == TeeElementType.Unknown)
+            {
+                catFilters.Add(new ElementCategoryFilter(BuiltInCategory.OST_PipeFitting));
+                catFilters.Add(new ElementCategoryFilter(BuiltInCategory.OST_PipeAccessory));
+            }
+            if (typeA == TeeElementType.Duct || typeA == TeeElementType.Unknown)
+            {
+                catFilters.Add(new ElementCategoryFilter(BuiltInCategory.OST_DuctFitting));
+                catFilters.Add(new ElementCategoryFilter(BuiltInCategory.OST_DuctAccessory));
+            }
+            if (catFilters.Count > 0)
+            {
+                ElementFilter catFilter = catFilters.Count == 1
+                    ? catFilters[0]
+                    : new LogicalOrFilter(catFilters);
+                collector = collector.WherePasses(catFilter);
+            }
+
+            var col = collector.WhereElementIsNotElementType().ToElements();
 
             foreach (var el in col)
             {
                 if (el.Id == ignoreA || el.Id == ignoreB) continue;
                 if (!(el is FamilyInstance fi) || fi.Category == null) continue;
-
-                int cid = fi.Category.Id.IntegerValue;
-                bool isPipeFitting = (cid == (int)BuiltInCategory.OST_PipeFitting || cid == (int)BuiltInCategory.OST_PipeAccessory);
-                bool isDuctFitting = (cid == (int)BuiltInCategory.OST_DuctFitting || cid == (int)BuiltInCategory.OST_DuctAccessory);
-
-                // 过滤不匹配的专业，例如水系统不拦截电气或风管管件
-                if (typeA == TeeElementType.Pipe && !isPipeFitting) continue;
-                if (typeA == TeeElementType.Duct && !isDuctFitting) continue;
-                
-                // 如果既不是水管件也不是风管件（比如是电气设备），直接跳过
-                if (!isPipeFitting && !isDuctFitting) continue;
 
                 err = $"交点附近发现管件：{el.Id.IntegerValue} ({fi.Name})";
                 return false;

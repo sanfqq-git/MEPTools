@@ -268,6 +268,13 @@ namespace MEPTools.MEP3TeeConnect
             {
                 List<ElementId> aList = aDict[k];
                 List<ElementId> bList = bDict[k];
+                if (aList.Count == 0) continue;
+
+                // ★ 优化：系统名称 ↔ SystemTypeId 一一对应，每个系统只解析一次，
+                //   避免 BuildPairGeometry 中每对元素都重新读一次参数。
+                ElementId systemTypeId = MEPTeeCalculator.GetSystemTypeId(
+                    doc.GetElement(aList[0]), type);
+
                 for (int i = 0; i < aList.Count; i++)
                 {
                     pairs.Add(new TeePair
@@ -275,7 +282,8 @@ namespace MEPTools.MEP3TeeConnect
                         SystemName = k,
                         IdA = aList[i],
                         IdB = bList[i],
-                        ElemType = type
+                        ElemType = type,
+                        SystemTypeId = systemTypeId
                     });
                 }
             }
@@ -314,7 +322,7 @@ namespace MEPTools.MEP3TeeConnect
             p.ZA = MEPTeeCalculator.GetCenterZ(elemA);
             p.ZB = MEPTeeCalculator.GetCenterZ(elemB);
 
-            p.SystemTypeId = MEPTeeCalculator.GetSystemTypeId(elemA, p.ElemType);
+            // ★ 优化：p.SystemTypeId 已在 PairBySystem 一次性写入，无需重复读参数
             p.TypeId = elemA.GetTypeId();
 
             p.LevelId = elemA.LevelId;
