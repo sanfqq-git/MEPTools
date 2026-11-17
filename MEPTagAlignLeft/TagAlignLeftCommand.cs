@@ -100,7 +100,9 @@ namespace MEPTools.MEPTagAlignLeft
 
         public static double GetRowSpacing()
         {
-            return MEPConfig.GetDouble("TagAlign.RowSpacing", 0.50);
+            // 【方案A】与 MEPGroupTag 共用同一配置项 TagGroup.LineSpacing（单位：毫米）
+            double spacingMM = MEPConfig.GetDouble("TagGroup.LineSpacing", 200.0);
+            return UnitUtils.ConvertToInternalUnits(spacingMM, UnitTypeId.Millimeters);
         }
 
         public static void ExecuteMoves(Document doc, string transactionName,

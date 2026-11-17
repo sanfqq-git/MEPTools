@@ -19,6 +19,9 @@ namespace MEPTools.MEPGroupTag
         // 行聚类容差：SortUp 差 <= 此值视为"同一视觉行"（仅消抖，不误合并不同行）
         private const double SortRowToleranceMM = 5.0;
 
+        // 记录本次命令生成的所有 Tag，用于事务提交后统一置为选中
+        private readonly List<ElementId> _createdTagIds = new List<ElementId>();
+
         private class LinkMEPSelectionFilter : ISelectionFilter
         {
             private readonly Document _doc;
@@ -39,6 +42,9 @@ namespace MEPTools.MEPGroupTag
             UIDocument uiDoc = uiApp.ActiveUIDocument;
             Document doc = uiDoc.Document;
             View activeView = doc.ActiveView;
+
+            // 清空上一次的记录，防止重复执行时残留
+            _createdTagIds.Clear();
 
             MEPLogger.Instance.StartSession("MEP高度分组排版带T1");
 
@@ -142,6 +148,9 @@ namespace MEPTools.MEPGroupTag
                         IndependentTag newTag = IndependentTag.Create(
                             doc, targetSym.Id, activeView.Id, elemRef, false, TagOrientation.Horizontal, createPos);
 
+                        // 记录生成的 Tag
+                        _createdTagIds.Add(newTag.Id);
+
                         MEPLogger.Instance.AppendLine(
                             $"  #{k + 1} [Tag] {elem.GetType().Name} Id={elem.Id.IntegerValue} " +
                             $"SortUp={ToMM(item.SortUp):F1} SortRight={ToMM(item.SortRight):F1} " +
@@ -160,6 +169,12 @@ namespace MEPTools.MEPGroupTag
                 }
 
                 t.Commit();
+            }
+
+            // 事务提交后，将本次生成的所有 Tag 置为选中状态
+            if (_createdTagIds.Count > 0)
+            {
+                uiDoc.Selection.SetElementIds(_createdTagIds);
             }
 
             InfoCenterTip.Show("排版完成，请查看效果。");
@@ -447,6 +462,9 @@ namespace MEPTools.MEPGroupTag
 
             IndependentTag newTag = IndependentTag.Create(
                 doc, sym.Id, activeView.Id, hostRef, false, TagOrientation.Horizontal, createPos);
+
+            // 记录生成的 Tag
+            _createdTagIds.Add(newTag.Id);
 
             Parameter p = newTag.LookupParameter("T TO B") ?? 
                           newTag.LookupParameter("Tag") ?? 
