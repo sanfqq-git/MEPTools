@@ -50,7 +50,7 @@ namespace MEPTools
                 new ButtonConfig { Id = "MEPTools.Btn_GroupSortAnchorAlign",      Text = "指定基准对齐",         ToolTip = "按底部标高分组，点选锚点元素后其所在组保持不动，其他组对齐到锚点组同侧边缘", CommandType = typeof(MEPTools.MEPGroupSortAlign.AnchorAlignCommand) },
 
                 // 👇 高度分组 TAG 主功能 👇
-                new ButtonConfig { Id = "MEPTools.Btn_GroupTagByElevation",       Text = "高度分组 TAG",         ToolTip = "按高度分组打Tag并支持附加行", CommandType = typeof(MEPTools.MEPGroupTag.Cmd_Debug) },
+                new ButtonConfig { Id = "MEPTools.Btn_GroupTagByElevation",       Text = "高度分组 TAG",         ToolTip = "按高度分组打Tag并支持附加行", CommandType = typeof(MEPTools.MEPGroupTag.Command) },
                 // 👇 TAG 排版设置界面 👇
                 new ButtonConfig { Id = "MEPTools.Btn_GroupTagSettings",          Text = "TAG排版设置",          ToolTip = "设置排版行距、空行及附加行的Tag族", CommandType = typeof(MEPTools.MEPGroupTag.Cmd_TagGroupSettings) },
 

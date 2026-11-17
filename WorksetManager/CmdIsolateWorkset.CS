@@ -17,7 +17,7 @@ namespace MEPTools.WorksetManager
             Document doc = uidoc.Document;
             View view = uidoc.ActiveView;
 
-            MEPLogger.Instance.StartSession("仅显示当前工作集");
+            MEPLogger.Instance.StartSession("仅显示所选元素工作集");
 
             if (!doc.IsWorkshared)
             {
@@ -80,15 +80,15 @@ namespace MEPTools.WorksetManager
                     return Result.Cancelled;
                 }
 
+                // ⭐ 修改点：支持多选，空格键结束
                 var filter = new MEPElementSelectionFilter();
                 List<Element> selectedElements = MEPSelectionHelper.GetElements(
                     uidoc,
                     filter,
-                    "请选择参考元素（用于确定要隔离的工作集）",
-                    "请在视图中选择一个元素以提取其工作集",
+                    "请选择参考元素（可多选，用于确定要隔离的工作集），按空格键结束",
+                    "请在视图中选择元素以提取其工作集，按空格键结束",
                     minCount: 1,
-                    useSpaceKey: false,
-                    singlePick: true
+                    useSpaceKey: true
                 );
 
                 if (selectedElements == null || selectedElements.Count == 0)
@@ -97,48 +97,58 @@ namespace MEPTools.WorksetManager
                     return Result.Cancelled;
                 }
 
-                Element targetElem = selectedElements[0];
-                Parameter param = targetElem.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
+                // ⭐ 修改点：收集所有选中元素的工作集（去重）
+                HashSet<WorksetId> targetWorksetIds = new HashSet<WorksetId>();
+                List<string> invalidElementLogs = new List<string>();
 
-                if (param == null)
+                foreach (Element elem in selectedElements)
                 {
-                    InfoCenterTip.Show("选中的元素无工作集参数");
-                    MEPLogger.Instance.EndSession($"Failed: Param missing on element {targetElem.Id}.");
-                    return Result.Cancelled;
+                    Parameter param = elem.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
+
+                    if (param == null)
+                    {
+                        invalidElementLogs.Add($"元素 {elem.Id} 无工作集参数，已跳过。");
+                        continue;
+                    }
+
+                    int worksetIntId = param.AsInteger();
+                    if (worksetIntId < 0)
+                    {
+                        invalidElementLogs.Add($"元素 {elem.Id} 的工作集ID无效({worksetIntId})，已跳过。");
+                        continue;
+                    }
+
+                    targetWorksetIds.Add(new WorksetId(worksetIntId));
                 }
 
-                int worksetIntId = param.AsInteger();
-
-                if (worksetIntId < 0)
+                if (targetWorksetIds.Count == 0)
                 {
-                    InfoCenterTip.Show("无法识别元素的工作集（工作集ID无效）");
-                    MEPLogger.Instance.EndSession($"Failed: Invalid WorksetId {worksetIntId}.");
-                    return Result.Cancelled;
-                }
-
-                WorksetId targetWorksetId = new WorksetId(worksetIntId);
-                Workset targetWorkset = doc.GetWorksetTable().GetWorkset(targetWorksetId);
-
-                if (targetWorkset == null)
-                {
-                    InfoCenterTip.Show("无法找到目标工作集");
-                    MEPLogger.Instance.EndSession($"Failed: Workset not found (Id={worksetIntId}).");
+                    InfoCenterTip.Show("所选元素中未找到有效的工作集");
+                    foreach (string logLine in invalidElementLogs)
+                    {
+                        MEPLogger.Instance.AppendLine(logLine);
+                    }
+                    MEPLogger.Instance.EndSession("Failed: No valid workset from selected elements.");
                     return Result.Cancelled;
                 }
 
                 int hiddenCount = 0;
-                using (Transaction trans = new Transaction(doc, "仅显示当前工作集"))
+                List<string> shownWorksetNames = new List<string>();
+
+                using (Transaction trans = new Transaction(doc, "仅显示所选元素工作集"))
                 {
                     trans.Start();
+
                     foreach (Workset ws in allWorksets)
                     {
-                        if (ws.Id == targetWorksetId)
+                        if (targetWorksetIds.Contains(ws.Id))
                         {
                             // ⭐ 性能优化：先 Get 判断，已是目标状态则跳过 Set
                             if (view.GetWorksetVisibility(ws.Id) != WorksetVisibility.Visible)
                             {
                                 view.SetWorksetVisibility(ws.Id, WorksetVisibility.Visible);
                             }
+                            shownWorksetNames.Add(ws.Name);
                         }
                         else
                         {
@@ -159,7 +169,14 @@ namespace MEPTools.WorksetManager
                     }
                 }
 
-                string msg = $"已仅显示工作集【{targetWorkset.Name}】，隐藏其他 {hiddenCount} 个工作集";
+                // 将跳过元素的日志在事务结束后统一写出（避免事务持锁期间 I/O）
+                foreach (string logLine in invalidElementLogs)
+                {
+                    MEPLogger.Instance.AppendLine(logLine);
+                }
+
+                string shownList = string.Join("、", shownWorksetNames);
+                string msg = $"已仅显示 {shownWorksetNames.Count} 个工作集【{shownList}】，隐藏其他 {hiddenCount} 个工作集";
                 if (hasTemplate) msg += "（提示：视图有模板，可能影响效果）";
                 InfoCenterTip.Show(msg);
                 MEPLogger.Instance.EndSession(msg);

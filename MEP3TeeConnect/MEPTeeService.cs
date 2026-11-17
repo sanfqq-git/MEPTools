@@ -10,15 +10,21 @@ namespace MEPTools.MEP3TeeConnect
     /// 单对 T 形处理流程：
     ///   1) 修改 B 的近端（延长/缩短）到交点
     ///   2) 打断 A 于交点（BreakCurve）
-    ///   3) 创建立管（X/Y = 交点，Z 从 A 中心线到 B 中心线），立管规格取 A、B 中大者
-    ///   4) A 三通 = A 左段 + A 右段 + 立管接 A 端（异径时由 Revit 自动选异径三通族）
-    ///   5) B 弯头 = 立管接 B 端 + B 近端连接器（异径时由 Revit 自动选异径弯头族）
+    ///   3) 创建立管（X/Y = 交点，Z 从 A 中心线到 B 中心线），立管规格取 B
+    ///      ★ 矩形风管：检测立管顶朝向，避免三通处矩形截面扭曲
+    ///         - 情况一：立管正方形 → 保持
+    ///         - 情况二：立管长方形，长边 ∥ A 轴 → 保持
+    ///         - 情况三：立管长方形，长边 ⟂ A 轴 → 正方形化（边长 = 长边）
+    ///   4) A 三通 = A 左段 + A 右段 + 立管接 A 端
+    ///   5) B 弯头 = 立管接 B 端 + B 近端连接器
     /// ⚠ 调用方必须已开启事务
     /// </summary>
     public class MEPTeeService
     {
         private readonly StringBuilder _log;
         private const double ConnectorTolMm = 50.0;
+        private const double ParallelDotThreshold = 0.99;   // |dot| > 0.99 视为平行
+        private const double SizeEpsilon = 1e-6;
 
         public MEPTeeService(StringBuilder log)
         {
@@ -45,7 +51,7 @@ namespace MEPTools.MEP3TeeConnect
             _log.AppendLine($"  B 中心线 Z = {p.ZB * MEPTeeCalculator.FtToMm:F1}mm");
             _log.AppendLine($"  B 修改端点：{(p.ModifyB0 ? "b0" : "b1")}，" +
                             $"{(p.NeedExtend ? "延长" : "缩短")}");
-            _log.AppendLine($"  立管规格（取大）：{FmtSize(p.Diameter, p.Width, p.Height)}");
+            _log.AppendLine($"  立管规格（取 B）：{FmtSize(p.Diameter, p.Width, p.Height)}");
 
             // ============================================================
             // 1. 修改 B 的端点
@@ -76,7 +82,7 @@ namespace MEPTools.MEP3TeeConnect
             _log.AppendLine($"  A 打断：左段={aLeft.IntegerValue}，右段={aRight.IntegerValue}");
 
             // ============================================================
-            // 3. 创建立管（交点处，Z 从 A 中心到 B 中心，规格取大）
+            // 3. 创建立管（交点处，Z 从 A 中心到 B 中心，规格取 B）
             // ============================================================
             XYZ riserTop = new XYZ(p.CrossPoint.X, p.CrossPoint.Y, p.ZA);
             XYZ riserBot = new XYZ(p.CrossPoint.X, p.CrossPoint.Y, p.ZB);
@@ -89,6 +95,10 @@ namespace MEPTools.MEP3TeeConnect
                 throw new InvalidOperationException("立管创建失败");
             doc.Regenerate();
             _log.AppendLine($"  立管：ID={riser.Id.IntegerValue}");
+
+            // ★ 新增：矩形风管立管顶朝向检测与正方形化（防扭曲）
+            AdjustRiserTopForRectDuct(doc, p, riser, elemA, riserTop);
+            doc.Regenerate();
 
             // ============================================================
             // 4. 三通（异径时 Revit 自动选异径三通族）
@@ -106,7 +116,7 @@ namespace MEPTools.MEP3TeeConnect
             {
                 throw new InvalidOperationException(
                     "A 三通创建失败。规格：A " + FmtSize(p.DiameterA, p.WidthA, p.HeightA) +
-                    " / 立管 " + FmtSize(p.Diameter, p.Width, p.Height) +
+                    " / 立管 " + FmtConnSize(rTop) +
                     "。若为异径连接，请确认项目中有匹配的异径三通族" +
                     "（如 Tee - Generic - Reducing）且规格覆盖该组合。");
             }
@@ -127,7 +137,7 @@ namespace MEPTools.MEP3TeeConnect
             if (elbow == null)
             {
                 throw new InvalidOperationException(
-                    "弯头创建失败。规格：立管 " + FmtSize(p.Diameter, p.Width, p.Height) +
+                    "弯头创建失败。规格：立管 " + FmtConnSize(rBot) +
                     " / B " + FmtSize(p.DiameterB, p.WidthB, p.HeightB) +
                     "。若为异径连接，请确认项目中有匹配的异径弯头族。");
             }
@@ -135,6 +145,102 @@ namespace MEPTools.MEP3TeeConnect
             _log.AppendLine($"  弯头：ID={elbow.Id.IntegerValue}，族={elbow.Symbol?.Family?.Name}");
 
             _log.AppendLine($"  ✓ 系统 {p.SystemName} 处理完成");
+        }
+
+        // =====================================================================
+        // ★ 立管顶朝向检测与正方形化（防止三通处矩形截面扭曲）
+        // =====================================================================
+        private void AdjustRiserTopForRectDuct(Document doc, TeePair p, Element riser,
+            Element elemA, XYZ riserTop)
+        {
+            // 圆形管（Pipe）或未知类型：不处理
+            if (p.ElemType != TeeElementType.Duct) return;
+
+            Connector rTop = FindConnectorAtPoint(riser, riserTop);
+            if (rTop == null) return;
+            if (rTop.Shape != ConnectorProfileType.Rectangular) return;   // 圆形风管不处理
+
+            double w = rTop.Width;
+            double h = rTop.Height;
+            if (w <= SizeEpsilon || h <= SizeEpsilon) return;
+
+            const double f = MEPTeeCalculator.FtToMm;
+
+            // ---------- 情况一：正方形 → 保持 ----------
+            if (Math.Abs(w - h) < SizeEpsilon)
+            {
+                _log.AppendLine($"  立管顶：正方形 {w * f:F0}x{h * f:F0}，保持");
+                return;
+            }
+
+            // ---------- 长方形：判断长边朝向 ----------
+            Transform cs = rTop.CoordinateSystem;
+            if (cs == null)
+            {
+                _log.AppendLine("  立管顶：无法读取坐标系，跳过朝向调整");
+                return;
+            }
+
+            // 长边方向（水平面内两条正交边之一）
+            XYZ longSideDir = (w > h) ? cs.BasisX : cs.BasisY;
+
+            XYZ axisA = GetAxisDirection(elemA);
+            if (axisA == null)
+            {
+                _log.AppendLine("  立管顶：无法获取 A 轴方向，跳过朝向调整");
+                return;
+            }
+
+            double dot = Math.Abs(longSideDir.DotProduct(axisA));
+            bool isParallel = dot > ParallelDotThreshold;
+
+            // ---------- 情况二：长边 ∥ A 轴，不扭曲 → 保持 ----------
+            if (isParallel)
+            {
+                _log.AppendLine(
+                    $"  立管顶：长方形 {w * f:F0}x{h * f:F0}，长边 ∥ A 轴（平行，不扭曲），保持");
+                return;
+            }
+
+            // ---------- 情况三：长边 ⟂ A 轴（或斜交）→ 正方形化 ----------
+            double maxSide = Math.Max(w, h);
+            _log.AppendLine(
+                $"  立管顶：长方形 {w * f:F0}x{h * f:F0}，长边 ⟂ A 轴（垂直，会扭曲）→ " +
+                $"正方形化 {maxSide * f:F0}x{maxSide * f:F0}");
+
+            TrySetParam(riser, BuiltInParameter.RBS_CURVE_WIDTH_PARAM, maxSide);
+            TrySetParam(riser, BuiltInParameter.RBS_CURVE_HEIGHT_PARAM, maxSide);
+            doc.Regenerate();
+
+            // 验证修改是否生效（部分立管受约束时可能改不动）
+            Connector rTopAfter = FindConnectorAtPoint(riser, riserTop);
+            if (rTopAfter != null && rTopAfter.Shape == ConnectorProfileType.Rectangular)
+            {
+                double w2 = rTopAfter.Width;
+                double h2 = rTopAfter.Height;
+                if (Math.Abs(w2 - h2) < SizeEpsilon && Math.Abs(w2 - maxSide) < SizeEpsilon)
+                {
+                    _log.AppendLine($"  ✓ 立管顶正方形化成功：{w2 * f:F0}x{h2 * f:F0}");
+                }
+                else
+                {
+                    _log.AppendLine(
+                        $"  ⚠ 立管顶正方形化未完全生效（当前 {w2 * f:F0}x{h2 * f:F0}），" +
+                        $"三通可能因截面不匹配而失败，请检查立管约束");
+                }
+            }
+        }
+
+        /// <summary>获取水平管轴线方向（单位向量，XY 平面）</summary>
+        private XYZ GetAxisDirection(Element e)
+        {
+            if (e?.Location is LocationCurve lc && lc.Curve is Line line)
+            {
+                XYZ d = line.Direction;
+                XYZ flat = new XYZ(d.X, d.Y, 0);
+                if (flat.GetLength() > 1e-6) return flat.Normalize();
+            }
+            return null;
         }
 
         // =====================================================================
@@ -252,6 +358,16 @@ namespace MEPTools.MEP3TeeConnect
             if (w > 1e-9 && h > 1e-9)
                 return $"{w * f:F0}x{h * f:F0}";
             return $"Ø{dia * f:F0}";
+        }
+
+        /// <summary>按连接器实际尺寸格式化（用于异常信息，反映调整后尺寸）</summary>
+        private string FmtConnSize(Connector c)
+        {
+            const double f = MEPTeeCalculator.FtToMm;
+            if (c == null) return "null";
+            if (c.Shape == ConnectorProfileType.Rectangular)
+                return $"{c.Width * f:F0}x{c.Height * f:F0}";
+            return $"Ø{c.Radius * 2 * f:F0}";
         }
     }
 }
