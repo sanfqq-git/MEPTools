@@ -1,3 +1,7 @@
+// ============================================================
+// 文件：MEPConfig.cs
+// 位置：Shared 文件夹
+// ============================================================
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -67,6 +71,18 @@ namespace MEPTools.Shared
                 "输出 LINK / BIM360 文件失败，请查看日志。"),
             new KeyValuePair<string,string>("ExportLocal.Msg.CancelledFolder",
                 "未选择输出目录，操作已取消。"),
+
+            // ================= ChangeRefLevel：修改参照标高（位置保持不变） =================
+            new KeyValuePair<string,string>("ChangeRefLevel.FormTitle",         "选择目标参照标高"),
+            new KeyValuePair<string,string>("ChangeRefLevel.FormLabel",         "请选择目标参照标高："),
+            new KeyValuePair<string,string>("ChangeRefLevel.ButtonOk",          "确定"),
+            new KeyValuePair<string,string>("ChangeRefLevel.ButtonCancel",      "取消"),
+            new KeyValuePair<string,string>("ChangeRefLevel.PickPrompt",
+                "请选择要修改参照标高的元素（按空格键结束）"),
+            new KeyValuePair<string,string>("ChangeRefLevel.Msg.SummaryTitle",  "修改参照标高"),
+            new KeyValuePair<string,string>("ChangeRefLevel.Msg.SummaryBody",
+                "修改完成：\n成功 {0} 个\n跳过 {1} 个\n失败 {2} 个\n\n目标标高：{3}"),
+            new KeyValuePair<string,string>("ChangeRefLevel.PositionToleranceMm", "0.01"),
         };
 
         private static void EnsureLoaded()
