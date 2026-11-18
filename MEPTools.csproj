@@ -1,30 +1,37 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
-<Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
   <PropertyGroup>
-    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
-    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
-    <ProjectGuid>{35666D1E-08E3-49F0-B2CF-BB436F4A5E42}</ProjectGuid>
+    <!-- 保持原框架，不升级 -->
+    <TargetFramework>net48</TargetFramework>
     <OutputType>Library</OutputType>
     <RootNamespace>MEPTools</RootNamespace>
     <AssemblyName>MEPTools</AssemblyName>
-    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
-    <FileAlignment>512</FileAlignment>
-    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+
+    <!-- Revit 2022 是 x64，必须 -->
+    <PlatformTarget>x64</PlatformTarget>
+    <Platforms>AnyCPU;x64</Platforms>
+
+    <!-- 启用 WPF：这一行是修复 InitializeComponent 的关键 -->
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+
+    <!-- 保持原输出目录结构 -->
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+
+    <!-- 兼容旧行为 -->
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
-  </PropertyGroup>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <FileAlignment>512</FileAlignment>
 
-  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
-    <PlatformTarget>x64</PlatformTarget>
-    <OutputPath>bin\Debug\</OutputPath>
-  </PropertyGroup>
-
-  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
-    <PlatformTarget>x64</PlatformTarget>
-    <OutputPath>bin\Release\</OutputPath>
+    <!-- 关闭默认项会带来麻烦，这里保持默认开启（自动包含 .cs/.xaml） -->
+    <EnableDefaultItems>true</EnableDefaultItems>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Revit API -->
+    <!-- Revit API（路径不变） -->
     <Reference Include="RevitAPI">
       <HintPath>C:\Program Files\Autodesk\Revit 2022\RevitAPI.dll</HintPath>
       <Private>False</Private>
@@ -33,38 +40,18 @@
       <HintPath>C:\Program Files\Autodesk\Revit 2022\RevitAPIUI.dll</HintPath>
       <Private>False</Private>
     </Reference>
-
-    <!-- AdWindows（Autodesk.Windows.ComponentManager 所在程序集） -->
     <Reference Include="AdWindows">
       <HintPath>C:\Program Files\Autodesk\Revit 2022\AdWindows.dll</HintPath>
       <Private>False</Private>
     </Reference>
-
-    <!-- .NET 基础引用 -->
-    <Reference Include="System" />
-    <Reference Include="System.Core" />
-    <Reference Include="System.Windows.Forms" />
-    <Reference Include="System.Drawing" />
-    <Reference Include="PresentationCore" />
-    <Reference Include="PresentationFramework" />
-    <Reference Include="WindowsBase" />
   </ItemGroup>
 
+  <!-- 防止 obj/bin 下的自动生成文件被重复编译（SDK 默认已排除，这里双保险） -->
   <ItemGroup>
-    <Compile Include="**\*.cs" Exclude="obj\**\*.cs;bin\**\*.cs" />
+    <Compile Remove="**\obj\**\*.cs" />
+    <Compile Remove="**\bin\**\*.cs" />
+    <None Remove="**\obj\**" />
+    <None Remove="**\bin\**" />
   </ItemGroup>
 
-<ItemGroup>
-  <!-- 排除所有子文件夹下的 obj 和 bin 目录，防止其生成的临时代码被重复编译 -->
-  <Compile Remove="**/obj/**" />
-  <Compile Remove="**/bin/**" />
-  <None Remove="**/obj/**" />
-  <None Remove="**/bin/**" />
-  <Content Remove="**/obj/**" />
-  <Content Remove="**/bin/**" />
-  <EmbeddedResource Remove="**/obj/**" />
-  <EmbeddedResource Remove="**/bin/**" />
-</ItemGroup>
-
-  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>
