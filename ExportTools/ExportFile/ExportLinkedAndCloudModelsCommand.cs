@@ -1,13 +1,14 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows.Forms;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
+using MEPTools.ExportTools.Common;
 using MEPTools.Shared;
 
-namespace MEPTools.ExportTools
+namespace MEPTools.ExportTools.ExportFile
 {
     [Transaction(TransactionMode.Manual)]
     public class ExportLinkedAndCloudModelsCommand : IExternalCommand
@@ -28,25 +29,23 @@ namespace MEPTools.ExportTools
                     .Select(id => doc.GetElement(id) as RevitLinkType)
                     .Where(lt => lt != null).OrderBy(lt => lt.Name).ToList();
 
-                List<ElementId> selectedLinkIds = new List<ElementId>();
-                if (allLinkTypes.Count > 0)
-                {
-                    using (var form = new LinkSelectionForm(allLinkTypes))
-                    {
-                        if (form.ShowDialog() != DialogResult.OK) return Result.Cancelled;
-                        selectedLinkIds = form.SelectedTypeIds;
-                    }
-                }
-
+                // 勾选窗体：链接默认不勾选、本档案备份默认勾选；输出位置也在这里确定，不再二次弹目录框
+                List<ElementId> selectedLinkIds;
+                bool includeMainModel;
                 string rootFolder;
-                using (var dialog = new FolderBrowserDialog())
+
+                using (var form = new LinkSelectionForm(allLinkTypes, doc.Title, LinkSelectionForm.GetDefaultOutputFolder()))
                 {
-                    dialog.Description = "请选择模型输出根目录";
-                    if (dialog.ShowDialog() != DialogResult.OK) return Result.Cancelled;
-                    rootFolder = dialog.SelectedPath;
+                    if (form.ShowDialog() != DialogResult.OK) return Result.Cancelled;
+                    selectedLinkIds = form.SelectedTypeIds;
+                    includeMainModel = form.IncludeMainModel;
+                    rootFolder = form.OutputFolder;
                 }
 
-                var result = Exporters.ExportModels(doc, uiapp, rootFolder, selectedLinkIds);
+                if (string.IsNullOrWhiteSpace(rootFolder)) return Result.Cancelled;
+
+                // 本档案备份文件名加前缀【当前文件】-
+                var result = Exporters.ExportModels(doc, uiapp, rootFolder, selectedLinkIds, includeMainModel, ExportFileUtils.CurrentDocNamePrefix);
 
                 string summary = $"模型导出完成。\n成功: {result.Success} | 跳过: {result.Skip} | 失败: {result.Fail}\n\n📁 {rootFolder}";
                 MEPLogger.Instance.EndSession($"Done: Success={result.Success}");

@@ -1,14 +1,15 @@
-using System;
+﻿using System;
 using System.Windows.Forms;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
+using MEPTools.ExportTools.Common;
 using MEPTools.Shared;
 
-namespace MEPTools.ExportTools
+namespace MEPTools.ExportTools.ExportFile
 {
     [Transaction(TransactionMode.Manual)]
-    public class ExportCadCommand : IExternalCommand
+    public class ExportImageCommand : IExternalCommand
     {
         public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
         {
@@ -16,30 +17,30 @@ namespace MEPTools.ExportTools
             Document doc = uiapp.ActiveUIDocument?.Document;
             if (doc == null) return Result.Cancelled;
 
-            MEPLogger.Instance.StartSession("单独导出 CAD 底图");
+            MEPLogger.Instance.StartSession("单独导出外部图片");
 
             try
             {
                 string rootFolder;
                 using (var dialog = new FolderBrowserDialog())
                 {
-                    dialog.Description = "请选择 CAD 底图输出目录";
+                    dialog.Description = "请选择外部图片输出目录";
                     if (dialog.ShowDialog() != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.SelectedPath)) 
                         return Result.Cancelled;
                     rootFolder = dialog.SelectedPath;
                 }
 
-                var result = Exporters.ExportCad(doc, rootFolder);
+                var result = Exporters.ExportImages(doc, rootFolder);
 
-                string summary = $"CAD 底图导出完成。\n成功: {result.Success} | 失败: {result.Fail}\n\n📁 {rootFolder}";
+                string summary = $"外部图片导出完成。\n成功: {result.Success} | 失败: {result.Fail}\n\n📁 {rootFolder}";
                 MEPLogger.Instance.EndSession($"Done: Success={result.Success}");
-                TaskDialog.Show("导出 CAD 底图", summary);
+                TaskDialog.Show("导出外部图片", summary);
                 return Result.Succeeded;
             }
             catch (Exception ex)
             {
-                MEPLogger.Instance.LogException("ExportCad", ex);
-                InfoCenterTip.Show("CAD 导出失败，请查看日志。");
+                MEPLogger.Instance.LogException("ExportImages", ex);
+                InfoCenterTip.Show("图片导出失败，请查看日志。");
                 return Result.Failed;
             }
         }

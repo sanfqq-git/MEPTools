@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace MEPTools
@@ -92,10 +92,18 @@ namespace MEPTools
                 new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_Rotate90", Text = "90°旋转(参考轴)", ToolTip = "绕参考轴旋转 90°", CommandType = typeof(MEPTools.Rotate90.Rotate90Command), PulldownGroup = "旋转工具" },
                 new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_Rotate90ByView", Text = "90°旋转(视图)", ToolTip = "按当前视图方向旋转或翻转 90°", CommandType = typeof(MEPTools.Rotate90ByAxis.Rotate90ByAxisCommand), PulldownGroup = "旋转工具" },
 
-                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_ExportAll", Text = "📦 一键打包全部", ToolTip = "一次性提取并打包（模型、CAD底图、外部图片）到指定目录", CommandType = typeof(MEPTools.ExportTools.ExportAllCommand), PulldownGroup = "导出工具" },
-                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_ExportModels", Text = "导出 3D 模型", ToolTip = "仅提取主档案和选定的 LINK 模型（纯物理复制）", CommandType = typeof(MEPTools.ExportTools.ExportLinkedAndCloudModelsCommand), PulldownGroup = "导出工具" },
-                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_ExportCad", Text = "导出 CAD 底图", ToolTip = "仅提取项目中的外部 CAD 链接/导入文件", CommandType = typeof(MEPTools.ExportTools.ExportCadCommand), PulldownGroup = "导出工具" },
-                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_ExportImages", Text = "导出 外部图片", ToolTip = "仅提取项目中的外部贴图/图片文件", CommandType = typeof(MEPTools.ExportTools.ExportImageCommand), PulldownGroup = "导出工具" },
+                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_ExportAll", Text = "📦 一键打包全部", ToolTip = "一次性提取并打包（模型、CAD底图、外部图片）到指定目录", CommandType = typeof(MEPTools.ExportTools.ExportFile.ExportAllCommand), PulldownGroup = "导出工具" },
+                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_ExportModels", Text = "导出 3D 模型", ToolTip = "仅提取主档案和选定的 LINK 模型（纯物理复制）", CommandType = typeof(MEPTools.ExportTools.ExportFile.ExportLinkedAndCloudModelsCommand), PulldownGroup = "导出工具" },
+                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_ExportCad", Text = "导出 CAD 底图", ToolTip = "仅提取项目中的外部 CAD 链接/导入文件", CommandType = typeof(MEPTools.ExportTools.ExportFile.ExportCadCommand), PulldownGroup = "导出工具" },
+                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_ExportImages", Text = "导出 外部图片", ToolTip = "仅提取项目中的外部贴图/图片文件", CommandType = typeof(MEPTools.ExportTools.ExportFile.ExportImageCommand), PulldownGroup = "导出工具" },
+
+                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_ExportSchedule", Text = "导出明细表", ToolTip = "勾选明细表导出为 Excel（一个明细表一个 Sheet，可继续编辑）", CommandType = typeof(MEPTools.ExportTools.ExportSchedule.ExportScheduleCommand), PulldownGroup = "导出工具" },
+                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_ExportSheetInfo", Text = "导出图纸信息", ToolTip = "导出图纸编号 / 名称清单到 Excel，供批量改名", CommandType = typeof(MEPTools.ExportTools.ExportSheet.SheetInfoExportCommand), PulldownGroup = "导出工具" },
+                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_ImportSheetInfo", Text = "导入图纸信息", ToolTip = "读回 Excel，只批量更新「图纸名称」（编号暂不改）", CommandType = typeof(MEPTools.ExportTools.ExportSheet.SheetInfoImportCommand), PulldownGroup = "导出工具" },
+                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_ExportViewInfo", Text = "导出视图信息", ToolTip = "导出视图名称 / 类型 / 所在图纸编号清单到 Excel", CommandType = typeof(MEPTools.ExportTools.ExportView.ViewInfoExportCommand), PulldownGroup = "导出工具" },
+                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_ImportViewInfo", Text = "导入视图信息", ToolTip = "读回 Excel，只批量更新「视图名称」", CommandType = typeof(MEPTools.ExportTools.ExportView.ViewInfoImportCommand), PulldownGroup = "导出工具" },
+                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_ExportParamLedger", Text = "图元参数台账", ToolTip = "按类别导出图元参数宽表（含类型参数），一个文件", CommandType = typeof(MEPTools.ExportTools.ExportParameter.ExportElementParameterLedgerCommand), PulldownGroup = "导出工具" },
+                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_ExportParamDef", Text = "参数定义清单", ToolTip = "项目参数 / 共享参数 / 族类型参数 三表合一导出", CommandType = typeof(MEPTools.ExportTools.ExportParameter.ExportParameterDefinitionCommand), PulldownGroup = "导出工具" },
             };
         }
     }

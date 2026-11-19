@@ -44,6 +44,10 @@
       <HintPath>C:\Program Files\Autodesk\Revit 2022\AdWindows.dll</HintPath>
       <Private>False</Private>
     </Reference>
+
+    <!-- 零依赖 xlsx 读写用到的框架自带程序集（.NET Framework 内建，非 NuGet，不引入版本冲突） -->
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
   </ItemGroup>
 
   <!-- 防止 obj/bin 下的自动生成文件被重复编译（SDK 默认已排除，这里双保险） -->
