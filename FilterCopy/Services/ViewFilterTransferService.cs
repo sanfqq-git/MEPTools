@@ -89,12 +89,12 @@ namespace MEPTools.FilterCopy.Services
         {
             ViewType.FloorPlan,       // 平面（含结构平面）
             ViewType.CeilingPlan,     // 天花板平面
+            ViewType.EngineeringPlan, // 工程平面（Revit 2022 起存在，同样支持 V/G 过滤器）
             ViewType.Elevation,       // 立面
             ViewType.Section,         // 剖面
             ViewType.ThreeD,          // 三维
             ViewType.AreaPlan,        // 面积平面
             ViewType.Rendering        // 渲染
-            // ViewType.EngineeringPlan 新版已移除，不再使用
             // ViewType.StructuralPlan 不存在，结构平面归为 FloorPlan
             // ViewType.Legend 不在白名单中，天然被排除（图例不支持过滤器）
         };

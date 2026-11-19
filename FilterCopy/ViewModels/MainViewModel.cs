@@ -26,7 +26,7 @@ namespace MEPTools.FilterCopy.ViewModels
 
         public ObservableCollection<ViewTargetItem> Targets { get; }
 
-        public string SourceViewName => _sourceView.Name;
+        public string SourceViewName => _sourceView == null ? string.Empty : _sourceView.Name;
 
         public bool OverrideMode
         {
@@ -106,8 +106,13 @@ namespace MEPTools.FilterCopy.ViewModels
 
                 // 弹出反馈对话框：成功数量 + 模板跳过等日志
                 var feedback = new FeedbackWindow(new FeedbackViewModel(result));
-                feedback.Owner = System.Windows.Application.Current.Windows
-                                        .OfType<Views.MainWindow>().FirstOrDefault();
+
+                // ★ 修复崩溃点：Revit 自身不创建 WPF Application 实例，
+                //   System.Windows.Application.Current 在 Revit 里恒为 null，
+                //   原写法 Application.Current.Windows 必然抛 NullReferenceException。
+                //   改为挂 Revit 主窗口句柄（ComponentManager.ApplicationWindow）。
+                AttachRevitOwner(feedback);
+
                 feedback.ShowDialog();
 
                 RequestClose?.Invoke(this, true);
@@ -115,6 +120,46 @@ namespace MEPTools.FilterCopy.ViewModels
             finally
             {
                 IsBusy = false;
+            }
+        }
+
+        /// <summary>
+        /// 把 WPF 窗口挂到 Revit 主窗口上。
+        /// Revit 里没有 WPF Application 实例，绝不能用 Application.Current.Windows 取 Owner。
+        /// </summary>
+        private static void AttachRevitOwner(System.Windows.Window window)
+        {
+            if (window == null) return;
+
+            try
+            {
+                // 1) 首选：Revit 主窗口句柄（AdWindows 的 ComponentManager.ApplicationWindow）
+                IntPtr hwnd = IntPtr.Zero;
+                try
+                {
+                    hwnd = Autodesk.Windows.ComponentManager.ApplicationWindow;
+                }
+                catch
+                {
+                    hwnd = IntPtr.Zero;
+                }
+
+                if (hwnd != IntPtr.Zero)
+                {
+                    new System.Windows.Interop.WindowInteropHelper(window).Owner = hwnd;
+                    return;
+                }
+
+                // 2) 兜底：只有确实存在 WPF Application 时，才去找主窗口当 Owner
+                var app = System.Windows.Application.Current;
+                if (app == null) return;
+
+                var owner = app.Windows.OfType<Views.MainWindow>().FirstOrDefault();
+                if (owner != null && !ReferenceEquals(owner, window)) window.Owner = owner;
+            }
+            catch
+            {
+                // 挂不上 Owner 不影响功能，静默忽略
             }
         }
     }

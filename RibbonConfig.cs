@@ -84,6 +84,10 @@ namespace MEPTools
                 new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_SystemChecker", Text = "系统检查", ToolTip = "检查 MEP 系统的连通性及参数完整性", CommandType = typeof(MEPTools.SystemChecker.Command), PulldownGroup = "修改工具" },
                 new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_DuctResize", Text = "DUCT更新尺寸", ToolTip = "更新 DUCT 尺寸", CommandType = typeof(MEPTools.DuctResize.Command), PulldownGroup = "修改工具" },
                 new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_RemakeInPlace", Text = "原地重制", ToolTip = "原地删除并重建或从 LINK 复制", CommandType = typeof(MEPTools.RemakeInPlaceCommands.Command), PulldownGroup = "修改工具" },
+
+                // ================= 面板4：实用工具 / 视图工具 =================
+                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_ViewTemplateCopy", Text = "复制视图样板", ToolTip = "从当前已打开的其它文件里挑视图样板（View Template），复制到当前文档", CommandType = typeof(MEPTools.FilterCopy.Commands.ViewTemplateCopyCommand), PulldownGroup = "视图工具" },
+                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_FilterCopy", Text = "复制视图过滤器", ToolTip = "从视图样板或用户选择的源视图复制过滤器到勾选的目标视图", CommandType = typeof(MEPTools.FilterCopy.Commands.FilterCopyCommand), PulldownGroup = "视图工具" },
                 
                 new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_Rotate90", Text = "90°旋转(参考轴)", ToolTip = "绕参考轴旋转 90°", CommandType = typeof(MEPTools.Rotate90.Rotate90Command), PulldownGroup = "旋转工具" },
                 new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_Rotate90ByView", Text = "90°旋转(视图)", ToolTip = "按当前视图方向旋转或翻转 90°", CommandType = typeof(MEPTools.Rotate90ByAxis.Rotate90ByAxisCommand), PulldownGroup = "旋转工具" },
