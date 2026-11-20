@@ -52,6 +52,11 @@ namespace MEPTools.Shared
             new KeyValuePair<string,string>("TagGroup.LineSpacing",            "200.0"),
             new KeyValuePair<string,string>("TagGroup.BlankLines",             "2"),
             new KeyValuePair<string,string>("TagGroup.ExtraRules",             ""),
+            new KeyValuePair<string,string>("TagGroup.MainDuctTag",            ""),
+            new KeyValuePair<string,string>("TagGroup.MainPipeTag",            ""),
+            new KeyValuePair<string,string>("TagGroup.MainTrayTag",            ""),
+            // 排版完成后是否把本次生成的 Tag 全部选中（关掉可省一次高亮刷新，约 20+ ms）
+            new KeyValuePair<string,string>("TagGroup.SelectCreatedTags",      "true"),
 
             // ================= ExportLocal：LINK/BIM360 输出到本地 =================
             new KeyValuePair<string,string>("ExportLocal.LinkedSubFolder",      "LinkedModels"),

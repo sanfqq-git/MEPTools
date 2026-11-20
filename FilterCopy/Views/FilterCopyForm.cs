@@ -46,10 +46,16 @@ namespace MEPTools.FilterCopy.Views
         private RadioButton _rbView;
         private DataGridView _gridSource;
         private DataGridView _gridTarget;
+        private TextBox _txtFilter;
         private CheckBox _chkOverride;
+        private Button _btnAll;
+        private Button _btnNone;
+        private Button _btnNoTemplate;
+        private Button _btnCurrentView;
         private Label _countLabel;
         private Label _sourceCountLabel;
         private bool _bindingSources;
+        private bool _resolveToActiveView;
 
         /// <summary>选中来源（样板或视图）的 Id；未选为 InvalidElementId。</summary>
         public RevitElementId SelectedSourceId { get; private set; } = RevitElementId.InvalidElementId;
@@ -77,6 +83,9 @@ namespace MEPTools.FilterCopy.Views
             BuildUi();
             LoadCandidateRows();
             _rbTemplate.Checked = true;   // 默认“从视图样板复制”，触发加载
+
+            // 窗体首次显示后，默认焦点落在“仅复制过滤器到当前视图”按钮上
+            Shown += (s, e) => _btnCurrentView.Focus();
         }
 
         // ==================== 界面 ====================
@@ -154,23 +163,30 @@ namespace MEPTools.FilterCopy.Views
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
-            var btnAll = new Button { Text = "全选", Width = 70, Height = 26, Margin = new Padding(0, 0, 6, 0) };
-            var btnNone = new Button { Text = "全不选", Width = 70, Height = 26, Margin = new Padding(0, 0, 6, 0) };
-            var btnNoTemplate = new Button { Text = "仅选未绑定模板", Width = 126, Height = 26, Margin = new Padding(0, 0, 6, 0) };
-            btnAll.Click += (s, e) => SetSelection(t => true);
-            btnNone.Click += (s, e) => SetSelection(t => false);
-            btnNoTemplate.Click += (s, e) => SetSelection(t => !t.HasTemplate);
+            _btnAll = new Button { Text = "全选", Width = 70, Height = 26, Margin = new Padding(0, 0, 6, 0) };
+            _btnNone = new Button { Text = "全不选", Width = 70, Height = 26, Margin = new Padding(0, 0, 6, 0) };
+            _btnNoTemplate = new Button { Text = "仅选未绑定模板", Width = 126, Height = 26, Margin = new Padding(0, 0, 6, 0) };
+            _btnAll.Click += (s, e) => SetSelection(t => true);
+            _btnNone.Click += (s, e) => SetSelection(t => false);
+            _btnNoTemplate.Click += (s, e) => SetSelection(t => !t.HasTemplate);
 
             _countLabel = new Label { AutoSize = true, ForeColor = Color.DimGray, Margin = new Padding(8, 8, 0, 0), Text = "已选 0 / 共 0" };
+
+            // 筛选框：按视图名称实时过滤右栏（仅隐藏不匹配行，勾选状态保留）
+            var lblFilter = new Label { Text = "筛选：", AutoSize = true, Margin = new Padding(0, 6, 4, 0) };
+            _txtFilter = new TextBox { Width = 140, Margin = new Padding(0, 3, 6, 0) };
+            _txtFilter.TextChanged += (s, e) => ApplyFilter();
 
             var bar = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 WrapContents = false, Margin = new Padding(0, 0, 0, 4)
             };
-            bar.Controls.Add(btnAll);
-            bar.Controls.Add(btnNone);
-            bar.Controls.Add(btnNoTemplate);
+            bar.Controls.Add(lblFilter);
+            bar.Controls.Add(_txtFilter);
+            bar.Controls.Add(_btnAll);
+            bar.Controls.Add(_btnNone);
+            bar.Controls.Add(_btnNoTemplate);
             bar.Controls.Add(_countLabel);
             layout.Controls.Add(bar, 0, 0);
 
@@ -207,10 +223,13 @@ namespace MEPTools.FilterCopy.Views
 
             _chkOverride = new CheckBox
             {
-                Text = "覆盖模式：先清空目标视图原有过滤器", Checked = true, AutoSize = true,
+                Text = "覆盖模式：先清空目标视图原有过滤器", Checked = false, AutoSize = true,
                 Anchor = AnchorStyles.Left, Margin = new Padding(2, 10, 0, 0)
             };
             layout.Controls.Add(_chkOverride, 0, 0);
+
+            _btnCurrentView = new Button { Text = "仅复制过滤器到当前视图", Width = 170, Height = 30, Margin = new Padding(0, 0, 8, 0) };
+            _btnCurrentView.Click += BtnCurrentView_Click;
 
             var btnCancel = new Button { Text = "取消", Width = 88, Height = 30, DialogResult = DialogResult.Cancel, Margin = new Padding(0, 0, 8, 0) };
             var btnOk = new Button { Text = "确定", Width = 110, Height = 30, Margin = new Padding(0) };
@@ -221,11 +240,12 @@ namespace MEPTools.FilterCopy.Views
                 AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
                 Anchor = AnchorStyles.Right, Margin = new Padding(0)
             };
+            buttons.Controls.Add(_btnCurrentView);
             buttons.Controls.Add(btnCancel);
             buttons.Controls.Add(btnOk);
             layout.Controls.Add(buttons, 1, 0);
 
-            AcceptButton = btnOk;
+            AcceptButton = _btnCurrentView;
             CancelButton = btnCancel;
             return layout;
         }
@@ -361,18 +381,13 @@ namespace MEPTools.FilterCopy.Views
             foreach (ViewTargetItem t in list)
             {
                 bool sel;
-                if (!_pickState.TryGetValue(t.ViewId, out sel)) sel = true;   // 默认全选
+                if (!_pickState.TryGetValue(t.ViewId, out sel)) sel = false;   // 默认全不选
                 t.IsSelected = sel;
                 _pickState[t.ViewId] = sel;
             }
             _targets = list;
 
-            _targetBinding.RaiseListChangedEvents = false;
-            _targetBinding.Clear();
-            foreach (ViewTargetItem t in list) _targetBinding.Add(t);
-            _targetBinding.RaiseListChangedEvents = true;
-            _targetBinding.ResetBindings();
-
+            ApplyFilter();
             UpdateCount();
         }
 
@@ -386,6 +401,30 @@ namespace MEPTools.FilterCopy.Views
             }
             _gridTarget.Refresh();
             UpdateCount();
+        }
+
+        /// <summary>
+        /// 按筛选关键字把匹配视图装入右栏绑定列表；不匹配项不显示。
+        /// 不操作行 Visible（绑定列表的当前行不允许隐藏，会抛 CurrencyManager 异常），
+        /// 改为子集重建绑定；勾选状态保留在原对象上，不受筛选影响。
+        /// </summary>
+        private void ApplyFilter()
+        {
+            if (_gridTarget == null || _targets == null) return;
+
+            string keyword = _txtFilter == null ? string.Empty : _txtFilter.Text.Trim();
+            bool hasKeyword = !string.IsNullOrEmpty(keyword);
+
+            _targetBinding.RaiseListChangedEvents = false;
+            _targetBinding.Clear();
+            foreach (ViewTargetItem t in _targets)
+            {
+                string name = t.ViewName ?? string.Empty;
+                if (!hasKeyword || name.IndexOf(keyword, StringComparison.OrdinalIgnoreCase) >= 0)
+                    _targetBinding.Add(t);
+            }
+            _targetBinding.RaiseListChangedEvents = true;
+            _targetBinding.ResetBindings();
         }
 
         private void UpdateCount()
@@ -426,17 +465,53 @@ namespace MEPTools.FilterCopy.Views
         public List<ViewTargetItem> GetSelectedTargets()
         {
             if (_gridTarget != null) _gridTarget.EndEdit();
+
+            // “仅复制到当前视图”按钮：目标固定为活动视图，忽略右栏勾选
+            if (_resolveToActiveView)
+            {
+                ViewTargetItem active = BuildActiveViewTarget();
+                return active == null ? new List<ViewTargetItem>() : new List<ViewTargetItem> { active };
+            }
+
             return _targets == null ? new List<ViewTargetItem>() : _targets.Where(t => t.IsSelected).ToList();
+        }
+
+        /// <summary>构造当前活动视图目标项；优先复用右栏已有行（保留模板状态），取不到返回 null。</summary>
+        private ViewTargetItem BuildActiveViewTarget()
+        {
+            if (_activeViewId == RevitElementId.InvalidElementId) return null;
+
+            ViewTargetItem active = _targets == null
+                ? null
+                : _targets.FirstOrDefault(t => t.ViewId == _activeViewId);
+
+            if (active != null)
+            {
+                active.IsSelected = true;
+                return active;
+            }
+
+            RevitView activeView = _doc.GetElement(_activeViewId) as RevitView;
+            if (activeView == null) return null;
+
+            active = new ViewTargetItem
+            {
+                ViewId = activeView.Id,
+                ViewName = activeView.Name,
+                ViewTypeName = activeView.ViewType.ToString(),
+                TemplateName = activeView.ViewTemplateId != RevitElementId.InvalidElementId
+                    ? (_doc.GetElement(activeView.ViewTemplateId) as RevitView)?.Name ?? "?"
+                    : string.Empty
+            };
+            active.IsSelected = true;
+            return active;
         }
 
         private void BtnOk_Click(object sender, EventArgs e)
         {
-            if (SelectedSourceId == RevitElementId.InvalidElementId)
-            {
-                MessageBox.Show(this, SourceIsTemplate ? "请先在左栏选中一个视图样板。" : "请先在左栏选中一个源视图。",
-                    Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
+            if (!ValidateSource()) return;
+
+            _resolveToActiveView = false;
 
             if (GetSelectedTargets().Count == 0)
             {
@@ -445,6 +520,46 @@ namespace MEPTools.FilterCopy.Views
             }
 
             DialogResult = DialogResult.OK;
+        }
+
+        private void BtnCurrentView_Click(object sender, EventArgs e)
+        {
+            if (!ValidateSource()) return;
+
+            // 边界情况在窗体阶段拦截，避免无效复制
+            if (_activeViewId == RevitElementId.InvalidElementId)
+            {
+                MessageBox.Show(this, "当前没有活动视图，无法仅复制到当前视图。", Text,
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            if (_activeViewId == SelectedSourceId)
+            {
+                MessageBox.Show(this, "来源就是当前视图，无需复制到自身，请换一个来源。",
+                    Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            if (BuildActiveViewTarget() == null)
+            {
+                MessageBox.Show(this, "当前活动视图已不存在，无法复制到当前视图。", Text,
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            _resolveToActiveView = true;
+            DialogResult = DialogResult.OK;
+        }
+
+        /// <summary>校验来源已选中；未选中弹提示并返回 false。</summary>
+        private bool ValidateSource()
+        {
+            if (SelectedSourceId == RevitElementId.InvalidElementId)
+            {
+                MessageBox.Show(this, SourceIsTemplate ? "请先在左栏选中一个视图样板。" : "请先在左栏选中一个源视图。",
+                    Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+            return true;
         }
 
         protected override void Dispose(bool disposing)

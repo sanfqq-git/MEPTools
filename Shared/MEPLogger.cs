@@ -13,10 +13,14 @@ namespace MEPTools.Shared
         private static readonly MEPLogger _instance = new MEPLogger();
         public static MEPLogger Instance { get { return _instance; } }
 
+        // 落盘节流：每累积这么多行才真正 Flush 一次（AutoFlush=false 时避免每行一次同步磁盘写）
+        private const int FlushEveryLines = 32;
+
         private readonly object _lock = new object();
         private readonly StringBuilder _sb = new StringBuilder();
         private StreamWriter _writer;
         private string _logFilePath;
+        private int _pendingLines = 0;
 
         private MEPLogger() { }
 
@@ -43,7 +47,9 @@ namespace MEPTools.Shared
                     
                     string name = prefix + DateTime.Now.ToString("yyyyMMdd_HHmmss_fff") + ".log";
                     _logFilePath = Path.Combine(dir, name);
-                    _writer = new StreamWriter(_logFilePath, false, new UTF8Encoding(false)) { AutoFlush = true };
+                    // 不再逐行 AutoFlush（逐行同步写盘在批量输出 Tag 时会明显拖慢），改为按 FlushEveryLines 节流
+                    _writer = new StreamWriter(_logFilePath, false, new UTF8Encoding(false)) { AutoFlush = false };
+                    _pendingLines = 0;
                     AppendLine("==================================================");
                     AppendLine(" MEP Tools - Debug Log");
                     AppendLine(" Title   : " + title);
@@ -67,7 +73,16 @@ namespace MEPTools.Shared
                 _sb.AppendLine(line);
                 if (_writer != null)
                 {
-                    try { _writer.WriteLine(DateTime.Now.ToString("HH:mm:ss.fff") + "  " + line); }
+                    try
+                    {
+                        _writer.WriteLine(DateTime.Now.ToString("HH:mm:ss.fff") + "  " + line);
+                        _pendingLines++;
+                        if (_pendingLines >= FlushEveryLines)
+                        {
+                            _writer.Flush();
+                            _pendingLines = 0;
+                        }
+                    }
                     catch { }
                 }
             }
@@ -99,6 +114,20 @@ namespace MEPTools.Shared
             AppendLine("[EXC] " + tag + ": " + ex.Message);
             AppendLine("[EXC] Stack: " + ex.StackTrace);
             if (ex.InnerException != null) AppendLine("[EXC] Inner: " + ex.InnerException.Message);
+            Flush();   // 异常时必须立刻落盘，避免崩溃后关键日志留在缓冲区
+        }
+
+        /// <summary>立刻把缓冲区写入磁盘</summary>
+        public void Flush()
+        {
+            lock (_lock)
+            {
+                try
+                {
+                    if (_writer != null) { _writer.Flush(); _pendingLines = 0; }
+                }
+                catch { }
+            }
         }
 
         private void CloseWriter()
@@ -108,6 +137,7 @@ namespace MEPTools.Shared
                 try { _writer.Flush(); _writer.Dispose(); } catch { }
                 _writer = null;
             }
+            _pendingLines = 0;
         }
     }
 }

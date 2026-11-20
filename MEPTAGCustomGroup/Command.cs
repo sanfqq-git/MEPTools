@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
@@ -56,20 +57,37 @@ namespace MEPTools.MEPGroupTag
             List<DebugMepGroup> groups = GroupByBottomElevation(selectedData, config.GroupToleranceMM);
             MEPLogger.Instance.AppendLine($"[日志] 共分为 {groups.Count} 组。");
 
-            FamilySymbol ductTagSym = GetDefaultTagSymbol(doc, activeView, BuiltInCategory.OST_DuctTags);
-            FamilySymbol trayTagSym = GetDefaultTagSymbol(doc, activeView, BuiltInCategory.OST_CableTrayTags);
-            FamilySymbol pipeTagSym = GetDefaultTagSymbol(doc, activeView, BuiltInCategory.OST_PipeTags);
-
+            // 先收集文档内全部可用 Tag 族（族类型键：族名: 类型名），再按配置解析各组共用的主行族
+            var swPrep = Stopwatch.StartNew();
             var allTagSymbols = new Dictionary<string, FamilySymbol>();
-            var collector = new FilteredElementCollector(doc).OfClass(typeof(FamilySymbol)).Cast<FamilySymbol>()
-                .Where(s => s.Category != null && (s.Category.Id.IntegerValue == (int)BuiltInCategory.OST_DuctTags || 
-                                                   s.Category.Id.IntegerValue == (int)BuiltInCategory.OST_PipeTags || 
-                                                   s.Category.Id.IntegerValue == (int)BuiltInCategory.OST_CableTrayTags));
-            foreach (var sym in collector)
+            // 只对三个 Tag 类别各做一次"类别+类"的快速过滤收集，
+            // 不再先枚举全文档所有 FamilySymbol 再用 LINQ 过滤（大模型里这一步原本要 20 ms 以上）
+            BuiltInCategory[] tagCats =
             {
-                string key = $"{sym.Family.Name}: {sym.Name}";
-                if (!allTagSymbols.ContainsKey(key)) allTagSymbols.Add(key, sym);
+                BuiltInCategory.OST_DuctTags,
+                BuiltInCategory.OST_PipeTags,
+                BuiltInCategory.OST_CableTrayTags
+            };
+            foreach (BuiltInCategory bic in tagCats)
+            {
+                var syms = new FilteredElementCollector(doc)
+                    .OfCategory(bic)
+                    .OfClass(typeof(FamilySymbol))
+                    .Cast<FamilySymbol>();
+
+                foreach (FamilySymbol sym in syms)
+                {
+                    string key = $"{sym.Family.Name}: {sym.Name}";
+                    if (!allTagSymbols.ContainsKey(key)) allTagSymbols.Add(key, sym);
+                }
             }
+
+            // 主行 Tag 族：优先取配置（TagGroup.MainDuctTag / MainPipeTag / MainTrayTag），配置留空才回退到视图内 Tag 类型
+            FamilySymbol ductTagSym = ResolveMainTagSymbol(doc, activeView, allTagSymbols, config.MainDuctTagSymName, BuiltInCategory.OST_DuctTags, "DUCT");
+            FamilySymbol trayTagSym = ResolveMainTagSymbol(doc, activeView, allTagSymbols, config.MainTrayTagSymName, BuiltInCategory.OST_CableTrayTags, "CABLE TRAY");
+            FamilySymbol pipeTagSym = ResolveMainTagSymbol(doc, activeView, allTagSymbols, config.MainPipeTagSymName, BuiltInCategory.OST_PipeTags, "PIPE");
+            swPrep.Stop();
+            MEPLogger.Instance.AppendLine($"  [计时] 族类型收集 + 主行族解析 = {swPrep.ElapsedMilliseconds} ms（共 {allTagSymbols.Count} 个 Tag 族类型）");
 
             XYZ basePickPt;
             try
@@ -100,6 +118,14 @@ namespace MEPTools.MEPGroupTag
             {
                 t.Start();
 
+                // 计时插桩（仅写日志，不影响任何流程）：用来定位"点了起始点后卡一下"到底花在哪一步
+                var swTotal = Stopwatch.StartNew();
+                var swSort = new Stopwatch();      // 分组内排序（含端点投影）
+                var swLog = new Stopwatch();       // 写调试日志
+                var swCreate = new Stopwatch();    // 建 Tag 段（含每行日志）
+                double pureCreateMs = 0;           // 纯 IndependentTag.Create 累计耗时
+                int taggedCount = 0;
+
                 double currentY = basePickPt.Y;
                 double lineSpacingFt = UnitUtils.ConvertToInternalUnits(config.LineSpacingMM, UnitTypeId.Millimeters);
 
@@ -114,16 +140,21 @@ namespace MEPTools.MEPGroupTag
                     var group = groups[i];
                     int groupIndex = i + 1;
 
+                    swSort.Start();
                     var sortResult = SortElementsForTagging(group.Elements, viewUp, viewRight, sortRowTolInternal);
+                    swSort.Stop();
                     var sortedItems = sortResult.Items;
 
+                    swLog.Start();
                     WriteGroupHeaderLog(groupIndex, groups.Count, group, sortResult);
-                    WriteSortLog(group, sortedItems, sortResult, viewUp, viewRight);
+                    WriteSortLog(sortedItems, sortResult);
+                    swLog.Stop();
 
+                    swCreate.Start();
                     var rulesBefore = config.ExtraRules.Where(r => r.GroupIndex == groupIndex.ToString() || r.GroupIndex == "*").ToList();
                     foreach (var rule in rulesBefore)
                     {
-                        TryCreateTagForRule(rule, group.Elements, selectedData, allTagSymbols, doc, activeView, basePickPt.X, ref currentY, lineSpacingFt);
+                        TryCreateTagForRule(rule, group.Elements, selectedData, allTagSymbols, ductTagSym, pipeTagSym, trayTagSym, doc, activeView, basePickPt.X, ref currentY, lineSpacingFt);
                     }
 
                     for (int k = 0; k < sortedItems.Count; k++)
@@ -145,8 +176,12 @@ namespace MEPTools.MEPGroupTag
                         if (!targetSym.IsActive) targetSym.Activate();
 
                         XYZ createPos = new XYZ(basePickPt.X, currentY, basePickPt.Z);
+                        var swOne = Stopwatch.StartNew();
                         IndependentTag newTag = IndependentTag.Create(
                             doc, targetSym.Id, activeView.Id, elemRef, false, TagOrientation.Horizontal, createPos);
+                        swOne.Stop();
+                        pureCreateMs += swOne.Elapsed.TotalMilliseconds;
+                        taggedCount++;
 
                         // 记录生成的 Tag
                         _createdTagIds.Add(newTag.Id);
@@ -162,22 +197,47 @@ namespace MEPTools.MEPGroupTag
                     var rulesAfter = config.ExtraRules.Where(r => r.GroupIndex == "After_" + groupIndex.ToString() || r.GroupIndex == "*After").ToList();
                     foreach (var rule in rulesAfter)
                     {
-                        TryCreateTagForRule(rule, group.Elements, selectedData, allTagSymbols, doc, activeView, basePickPt.X, ref currentY, lineSpacingFt);
+                        TryCreateTagForRule(rule, group.Elements, selectedData, allTagSymbols, ductTagSym, pipeTagSym, trayTagSym, doc, activeView, basePickPt.X, ref currentY, lineSpacingFt);
                     }
+                    swCreate.Stop();
 
                     currentY -= (config.BlankLines * lineSpacingFt);
                 }
 
+                var swCommit = Stopwatch.StartNew();
                 t.Commit();
+                swCommit.Stop();
+                swTotal.Stop();
+
+                double avgCreateMs = taggedCount > 0 ? pureCreateMs / taggedCount : 0;
+                MEPLogger.Instance.AppendLine("");
+                MEPLogger.Instance.AppendLine("========== 计时（排查卡顿用） ==========");
+                MEPLogger.Instance.AppendLine($"  总耗时        = {swTotal.ElapsedMilliseconds} ms");
+                MEPLogger.Instance.AppendLine($"    排序        = {swSort.ElapsedMilliseconds} ms");
+                MEPLogger.Instance.AppendLine($"    写调试日志  = {swLog.ElapsedMilliseconds} ms（{groups.Count} 组）");
+                MEPLogger.Instance.AppendLine($"    建 Tag 段   = {swCreate.ElapsedMilliseconds} ms（含每行日志，主行共 {taggedCount} 个）");
+                MEPLogger.Instance.AppendLine($"      其中纯 IndependentTag.Create（主行）= {pureCreateMs:F1} ms，平均 {avgCreateMs:F1} ms/个");
+                MEPLogger.Instance.AppendLine($"    提交事务    = {swCommit.ElapsedMilliseconds} ms");
+                if (swCreate.ElapsedMilliseconds > 0 && pureCreateMs < swCreate.ElapsedMilliseconds * 0.5)
+                    MEPLogger.Instance.AppendLine($"  [提示] 建 Tag 段里有 {swCreate.ElapsedMilliseconds - pureCreateMs:F0} ms 不属于 Revit 建 Tag（主要是日志/循环开销），可优先从日志减负");
+                MEPLogger.Instance.AppendLine("======================================");
             }
 
-            // 事务提交后，将本次生成的所有 Tag 置为选中状态
-            if (_createdTagIds.Count > 0)
+            // 事务提交后，将本次生成的所有 Tag 置为选中状态（可配置关闭，省一次高亮刷新）
+            var swAfter = Stopwatch.StartNew();
+            bool selectTags = MEPConfig.GetBool("TagGroup.SelectCreatedTags", true);
+            if (selectTags && _createdTagIds.Count > 0)
             {
                 uiDoc.Selection.SetElementIds(_createdTagIds);
             }
+            double selMs = swAfter.Elapsed.TotalMilliseconds;
 
+            var swTip = Stopwatch.StartNew();
             InfoCenterTip.Show("排版完成，请查看效果。");
+            swTip.Stop();
+
+            MEPLogger.Instance.AppendLine(
+                $"  [计时] 提交后：选中 {_createdTagIds.Count} 个 Tag = {selMs:F0} ms（SelectCreatedTags={selectTags}），气泡提示 = {swTip.ElapsedMilliseconds} ms");
             MEPLogger.Instance.EndSession("Debug完毕");
             return Result.Succeeded;
         }
@@ -205,6 +265,7 @@ namespace MEPTools.MEPGroupTag
             public GroupSlope Slope { get; set; }
             public string StrategyName { get; set; }
             public List<SortedElem> Items { get; set; }
+            public List<SortedElem> RawItems { get; set; }   // 排序前的原始投影数据，仅给日志复用，避免重复计算
             public int PositiveSlopeCount { get; set; }   // 左斜 /
             public int NegativeSlopeCount { get; set; }   // 右斜 \
             public int HorizontalCount { get; set; }      // 水平
@@ -253,6 +314,7 @@ namespace MEPTools.MEPGroupTag
         {
             var data = ComputeSortData(elems, viewUp, viewRight);
             var result = new SortResult();
+            result.RawItems = data;
 
             int pos = 0, neg = 0, hori = 0, vert = 0;
             foreach (var it in data)
@@ -358,19 +420,17 @@ namespace MEPTools.MEPGroupTag
         }
 
         private static void WriteSortLog(
-            DebugMepGroup group, List<SortedElem> sortedItems, SortResult result,
-            XYZ viewUp, XYZ viewRight)
+            List<SortedElem> sortedItems, SortResult result)
         {
             MEPLogger.Instance.AppendLine("  --- 排序前（分组原始顺序，含端点投影） ---");
-            var raw = ComputeSortData(group.Elements, viewUp, viewRight);
+            // 复用排序阶段已算好的投影数据（原来这里又对每个元素重算一次 LocationCurve 端点）
+            var raw = result.RawItems ?? new List<SortedElem>();
             foreach (var it in raw)
             {
                 MEPLogger.Instance.AppendLine(
-                    $"    [{it.Info.Elem.GetType().Name}] Id={it.Info.Elem.Id.IntegerValue}");
-                MEPLogger.Instance.AppendLine(
-                    $"       P1={FmtXYZ(it.P1)}  P2={FmtXYZ(it.P2)}");
-                MEPLogger.Instance.AppendLine(
-                    $"       Up1={ToMM(it.Up1):F1} Up2={ToMM(it.Up2):F1} | " +
+                    $"    [{it.Info.Elem.GetType().Name}] Id={it.Info.Elem.Id.IntegerValue} " +
+                    $"P1={FmtXYZ(it.P1)} P2={FmtXYZ(it.P2)} " +
+                    $"Up1={ToMM(it.Up1):F1} Up2={ToMM(it.Up2):F1} | " +
                     $"Right1={ToMM(it.Right1):F1} Right2={ToMM(it.Right2):F1} | " +
                     $"SortUp={ToMM(it.SortUp):F1} SortRight={ToMM(it.SortRight):F1}");
             }
@@ -379,19 +439,18 @@ namespace MEPTools.MEPGroupTag
             for (int k = 0; k < sortedItems.Count; k++)
             {
                 var it = sortedItems[k];
-                if (it.IsNewRow && k > 0)
-                {
-                    MEPLogger.Instance.AppendLine("      ------ 新行 ------");
-                }
+                string rowMark = (it.IsNewRow && k > 0) ? "    <<< 新行" : "";
                 MEPLogger.Instance.AppendLine(
                     $"    #{k + 1} [{it.Info.Elem.GetType().Name}] Id={it.Info.Elem.Id.IntegerValue} " +
-                    $"SortUp={ToMM(it.SortUp):F1} SortRight={ToMM(it.SortRight):F1}");
+                    $"SortUp={ToMM(it.SortUp):F1} SortRight={ToMM(it.SortRight):F1}{rowMark}");
             }
         }
 
         // ============================================================
 
-        private bool TryCreateTagForRule(ExtraRowRule rule, List<ElemInfo> groupElems, List<ElemInfo> selectedData, Dictionary<string, FamilySymbol> allTagSymbols, Document doc, View activeView, double baseX, ref double currentY, double lineSpacingFt)
+        private bool TryCreateTagForRule(ExtraRowRule rule, List<ElemInfo> groupElems, List<ElemInfo> selectedData, Dictionary<string, FamilySymbol> allTagSymbols,
+            FamilySymbol mainDuctSym, FamilySymbol mainPipeSym, FamilySymbol mainTraySym,
+            Document doc, View activeView, double baseX, ref double currentY, double lineSpacingFt)
         {
             Element hostElem = null;
             FamilySymbol targetSym = null;
@@ -400,10 +459,7 @@ namespace MEPTools.MEPGroupTag
             if (ductHost != null)
             {
                 hostElem = ductHost.Elem;
-                if (!string.IsNullOrEmpty(rule.DuctTagSymName) && allTagSymbols.TryGetValue(rule.DuctTagSymName, out var dSym))
-                    targetSym = dSym;
-                else
-                    targetSym = allTagSymbols.Values.FirstOrDefault(s => s.Category.Id.IntegerValue == (int)BuiltInCategory.OST_DuctTags);
+                targetSym = ResolveRuleTagSymbol(allTagSymbols, rule.DuctTagSymName, mainDuctSym, BuiltInCategory.OST_DuctTags, rule.TagText);
             }
 
             if (hostElem == null || targetSym == null)
@@ -412,10 +468,7 @@ namespace MEPTools.MEPGroupTag
                 if (pipeHost != null)
                 {
                     hostElem = pipeHost.Elem;
-                    if (!string.IsNullOrEmpty(rule.PipeTagSymName) && allTagSymbols.TryGetValue(rule.PipeTagSymName, out var pSym))
-                        targetSym = pSym;
-                    else
-                        targetSym = allTagSymbols.Values.FirstOrDefault(s => s.Category.Id.IntegerValue == (int)BuiltInCategory.OST_PipeTags);
+                    targetSym = ResolveRuleTagSymbol(allTagSymbols, rule.PipeTagSymName, mainPipeSym, BuiltInCategory.OST_PipeTags, rule.TagText);
                 }
             }
 
@@ -425,10 +478,7 @@ namespace MEPTools.MEPGroupTag
                 if (trayHost != null)
                 {
                     hostElem = trayHost.Elem;
-                    if (!string.IsNullOrEmpty(rule.CableTrayTagSymName) && allTagSymbols.TryGetValue(rule.CableTrayTagSymName, out var tSym))
-                        targetSym = tSym;
-                    else
-                        targetSym = allTagSymbols.Values.FirstOrDefault(s => s.Category.Id.IntegerValue == (int)BuiltInCategory.OST_CableTrayTags);
+                    targetSym = ResolveRuleTagSymbol(allTagSymbols, rule.CableTrayTagSymName, mainTraySym, BuiltInCategory.OST_CableTrayTags, rule.TagText);
                 }
             }
 
@@ -476,20 +526,101 @@ namespace MEPTools.MEPGroupTag
                 p.Set(text);
         }
 
-        private FamilySymbol GetDefaultTagSymbol(Document doc, View activeView, BuiltInCategory cat)
+        // ======================= Tag 族解析 =======================
+
+        // 主行（所有高度组共用）Tag 族解析顺序：
+        //   ① 配置项（族名: 类型名）命中且类别匹配 → 用配置
+        //   ② 配置留空或匹配失败 → 沿用当前视图内已有同类别 Tag 的类型（取最新放置的那个）
+        //   ③ 视图内也没有 → 文档内首个同类别族类型（仅保底，不中断功能）
+        private FamilySymbol ResolveMainTagSymbol(Document doc, View activeView, Dictionary<string, FamilySymbol> allTagSymbols,
+            string configuredName, BuiltInCategory cat, string label)
         {
-            var existingTag = new FilteredElementCollector(doc, activeView.Id)
+            if (!string.IsNullOrWhiteSpace(configuredName))
+            {
+                string note;
+                FamilySymbol fromConfig = FindTagSymbolByName(allTagSymbols, configuredName, cat, out note);
+                if (fromConfig != null)
+                {
+                    MEPLogger.Instance.AppendLine($"  [族] {label} 主行族 = {fromConfig.Family.Name}: {fromConfig.Name}（来源：配置文件{note}）");
+                    return fromConfig;
+                }
+                MEPLogger.Instance.AppendLine($"  [族][警告] {label} 配置值 \"{configuredName}\" 未匹配到同类别 Tag 族，回退到视图内 Tag 类型。");
+            }
+
+            FamilySymbol fromView = GetViewTagSymbol(doc, activeView, cat);
+            if (fromView != null)
+            {
+                MEPLogger.Instance.AppendLine(
+                    $"  [族] {label} 主行族 = {fromView.Family.Name}: {fromView.Name}（来源：视图内已有 Tag 类型，配置未指定）");
+                return fromView;
+            }
+
+            FamilySymbol fallback = allTagSymbols.Values.FirstOrDefault(s => IsTagCategory(s, cat));
+            if (fallback != null)
+            {
+                MEPLogger.Instance.AppendLine(
+                    $"  [族] {label} 主行族 = {fallback.Family.Name}: {fallback.Name}（来源：兜底-文档内首个同类别族，建议在 TAG排版设置 中指定）");
+            }
+            else
+            {
+                MEPLogger.Instance.AppendLine($"  [族][警告] {label} 未找到任何可用的同类别 Tag 族。");
+            }
+            return fallback;
+        }
+
+        // 附加行族：规则指定 → 跟随主行同款族 → 文档内首个同类别族（保底）
+        private FamilySymbol ResolveRuleTagSymbol(Dictionary<string, FamilySymbol> allTagSymbols, string ruleName,
+            FamilySymbol mainSym, BuiltInCategory cat, string ruleText)
+        {
+            FamilySymbol sym = null;
+            if (!string.IsNullOrWhiteSpace(ruleName))
+            {
+                string note;
+                sym = FindTagSymbolByName(allTagSymbols, ruleName, cat, out note);
+                if (sym != null && !string.IsNullOrEmpty(note))
+                    MEPLogger.Instance.AppendLine($"  [族] 附加行 \"{ruleText}\" 配置族 \"{ruleName}\" → {sym.Family.Name}: {sym.Name}{note}");
+                if (sym == null)
+                    MEPLogger.Instance.AppendLine($"  [族][警告] 附加行 \"{ruleText}\" 指定的 \"{ruleName}\" 未匹配到同类别 Tag 族，改跟随主行族。");
+            }
+            if (sym == null) sym = mainSym;
+            if (sym == null) sym = allTagSymbols.Values.FirstOrDefault(s => IsTagCategory(s, cat));
+            return sym;
+        }
+
+        // 按 "族名: 类型名" 找族类型；交由 TagTypeNameMatcher 做宽容匹配（空白/大小写/全角冒号/类型改名）
+        private static FamilySymbol FindTagSymbolByName(Dictionary<string, FamilySymbol> allTagSymbols, string name,
+            BuiltInCategory cat, out string matchNote)
+        {
+            matchNote = "";
+            if (allTagSymbols == null || string.IsNullOrWhiteSpace(name)) return null;
+
+            var keys = allTagSymbols.Where(kv => IsTagCategory(kv.Value, cat)).Select(kv => kv.Key).ToList();
+            string resolvedKey = TagTypeNameMatcher.Resolve(keys, name, out matchNote);
+            if (resolvedKey == null) return null;
+            return allTagSymbols[resolvedKey];
+        }
+
+        private static bool IsTagCategory(FamilySymbol sym, BuiltInCategory cat)
+        {
+            return sym != null && sym.Category != null && sym.Category.Id.IntegerValue == (int)cat;
+        }
+
+        // 视图内该类别最近放置的一个 Tag 的类型
+        private static FamilySymbol GetViewTagSymbol(Document doc, View activeView, BuiltInCategory cat)
+        {
+            var tags = new FilteredElementCollector(doc, activeView.Id)
                 .OfClass(typeof(IndependentTag))
                 .Cast<IndependentTag>()
-                .FirstOrDefault(t => t.Category != null && t.Category.Id.IntegerValue == (int)cat);
-            
-            if (existingTag != null && existingTag.GetTypeId() != ElementId.InvalidElementId)
-                return doc.GetElement(existingTag.GetTypeId()) as FamilySymbol;
+                .Where(t => t.Category != null && t.Category.Id.IntegerValue == (int)cat)
+                .OrderByDescending(t => t.Id.IntegerValue);
 
-            return new FilteredElementCollector(doc)
-                .OfClass(typeof(FamilySymbol))
-                .Cast<FamilySymbol>()
-                .FirstOrDefault(s => s.Category != null && s.Category.Id.IntegerValue == (int)cat);
+            foreach (var tag in tags)
+            {
+                if (tag.GetTypeId() == ElementId.InvalidElementId) continue;
+                var sym = doc.GetElement(tag.GetTypeId()) as FamilySymbol;
+                if (sym != null && IsTagCategory(sym, cat)) return sym;
+            }
+            return null;
         }
 
         private List<ElemInfo> GetSelectedMEPElements(UIDocument uiDoc)

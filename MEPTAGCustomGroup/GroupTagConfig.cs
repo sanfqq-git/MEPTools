@@ -34,11 +34,128 @@ namespace MEPTools.MEPGroupTag
         public string CableTrayTagSymName { get; set; } 
     }
 
+    /// <summary>
+    /// Tag 族类型名匹配器：把配置里的 "族名: 类型名" 与当前文档实际的族类型键做比对。
+    /// 容忍：大小写、各类空白（含 Tab / 全角空格 / NBSP）、零宽字符、全角冒号；
+    /// 允许只写族名或只写类型名；族名命中但类型改名时，回退到该族第一个类型。
+    /// </summary>
+    public static class TagTypeNameMatcher
+    {
+        // 去掉所有空白与零宽字符，全角冒号统一为半角，转小写
+        public static string Normalize(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            var kept = new char[s.Length];
+            int n = 0;
+            foreach (char c in s)
+            {
+                if (char.IsWhiteSpace(c)) continue;
+                if (c == '\u200B' || c == '\u200C' || c == '\u200D' || c == '\uFEFF') continue;
+                kept[n++] = (c == '：') ? ':' : c;
+            }
+            return new string(kept, 0, n).ToLowerInvariant();
+        }
+
+        // 按第一个冒号拆成 族名 / 类型名
+        public static bool TrySplit(string s, out string family, out string type)
+        {
+            family = "";
+            type = "";
+            if (string.IsNullOrEmpty(s)) return false;
+            int idx = s.IndexOf(':');
+            if (idx < 0) idx = s.IndexOf('：');
+            if (idx < 0) return false;
+            family = s.Substring(0, idx).Trim();
+            type = s.Substring(idx + 1).Trim();
+            return family.Length > 0;
+        }
+
+        // 在候选键集合里找最合适的那个；找不到返回 null，matchNote 说明匹配方式
+        public static string Resolve(IEnumerable<string> keys, string input, out string matchNote)
+        {
+            matchNote = "";
+            if (keys == null || string.IsNullOrWhiteSpace(input)) return null;
+
+            string trimmed = input.Trim();
+
+            // ① 原始字符串完全一致
+            foreach (string key in keys)
+            {
+                if (string.Equals(key, trimmed, StringComparison.Ordinal)) return key;
+            }
+
+            // ② 规范化后完全一致（空格 / 大小写 / 全角冒号差异）
+            string normInput = Normalize(trimmed);
+            foreach (string key in keys)
+            {
+                if (Normalize(key) == normInput)
+                {
+                    matchNote = "（已忽略空格/大小写差异）";
+                    return key;
+                }
+            }
+
+            string inFamily, inType;
+            bool hasSplit = TrySplit(trimmed, out inFamily, out inType);
+            string nFamily = hasSplit ? Normalize(inFamily) : normInput;
+            string nType = hasSplit ? Normalize(inType) : "";
+
+            // ③ 族名与类型都对上（规范化后）
+            if (hasSplit && nType.Length > 0)
+            {
+                foreach (string key in keys)
+                {
+                    string kFamily, kType;
+                    if (!TrySplit(key, out kFamily, out kType)) continue;
+                    if (Normalize(kFamily) == nFamily && Normalize(kType) == nType)
+                    {
+                        matchNote = "（已忽略空格/大小写差异）";
+                        return key;
+                    }
+                }
+            }
+
+            // ④ 族名对上、类型对不上 → 用该族第一个类型（调用方需提示核对）
+            if (hasSplit)
+            {
+                foreach (string key in keys)
+                {
+                    string kFamily, kType;
+                    if (!TrySplit(key, out kFamily, out kType)) continue;
+                    if (Normalize(kFamily) == nFamily)
+                    {
+                        matchNote = $"（族名命中，类型“{inType}”在当前模型中不存在，已改用该族第一个类型“{kType}”，请核对）";
+                        return key;
+                    }
+                }
+            }
+
+            // ⑤ 只写了族名或只写了类型名
+            foreach (string key in keys)
+            {
+                string kFamily, kType;
+                if (!TrySplit(key, out kFamily, out kType)) continue;
+                if (Normalize(kFamily) == normInput || Normalize(kType) == normInput)
+                {
+                    matchNote = "（按族名/类型名单独匹配）";
+                    return key;
+                }
+            }
+
+            return null;
+        }
+    }
+
     public class GroupTagConfig
     {
         public double GroupToleranceMM { get; set; } = 25.0;
         public double LineSpacingMM { get; set; } = 200.0;
         public int BlankLines { get; set; } = 2;
+
+        // 主行 Tag 族（所有高度组共用）。格式 "族名: 类型名"，留空表示沿用视图内已有 Tag 的类型
+        public string MainDuctTagSymName { get; set; } = "";
+        public string MainPipeTagSymName { get; set; } = "";
+        public string MainTrayTagSymName { get; set; } = "";
 
         public List<ExtraRowRule> ExtraRules { get; set; } = new List<ExtraRowRule>();
 
@@ -49,6 +166,13 @@ namespace MEPTools.MEPGroupTag
             cfg.GroupToleranceMM = MEPConfig.GetDouble("TagGroup.Tolerance", 25.0);
             cfg.LineSpacingMM = MEPConfig.GetDouble("TagGroup.LineSpacing", 200.0);
             cfg.BlankLines = MEPConfig.GetInt("TagGroup.BlankLines", 2);
+            // 组间空行下限 1：为 0 时不同高度的组会紧挨着排，视觉上无法区分组。
+            // 历史配置里这一项可能被写成 0（设置窗口误操作/滚轮误改），这里统一自动修正。
+            if (cfg.BlankLines < 1) cfg.BlankLines = 1;
+
+            cfg.MainDuctTagSymName = MEPConfig.GetString("TagGroup.MainDuctTag", "");
+            cfg.MainPipeTagSymName = MEPConfig.GetString("TagGroup.MainPipeTag", "");
+            cfg.MainTrayTagSymName = MEPConfig.GetString("TagGroup.MainTrayTag", "");
 
             string rulesStr = MEPConfig.GetString("TagGroup.ExtraRules", "");
             if (!string.IsNullOrWhiteSpace(rulesStr))
@@ -79,6 +203,10 @@ namespace MEPTools.MEPGroupTag
             MEPConfig.SetValue("TagGroup.LineSpacing", LineSpacingMM.ToString());
             MEPConfig.SetValue("TagGroup.BlankLines", BlankLines.ToString());
 
+            MEPConfig.SetValue("TagGroup.MainDuctTag", MainDuctTagSymName ?? "");
+            MEPConfig.SetValue("TagGroup.MainPipeTag", MainPipeTagSymName ?? "");
+            MEPConfig.SetValue("TagGroup.MainTrayTag", MainTrayTagSymName ?? "");
+
             var ruleItems = ExtraRules.Select(r => $"{r.GroupIndex};{r.TagText};{r.DuctTagSymName};{r.PipeTagSymName};{r.CableTrayTagSymName}");
             MEPConfig.SetValue("TagGroup.ExtraRules", string.Join("|", ruleItems));
             
@@ -91,7 +219,10 @@ namespace MEPTools.MEPGroupTag
             {
                 $"Tolerance={GroupToleranceMM}",
                 $"LineSpacing={LineSpacingMM}",
-                $"BlankLines={BlankLines}"
+                $"BlankLines={BlankLines}",
+                $"MainDuctTag={MainDuctTagSymName}",
+                $"MainPipeTag={MainPipeTagSymName}",
+                $"MainTrayTag={MainTrayTagSymName}"
             };
             var ruleItems = ExtraRules.Select(r => $"{r.GroupIndex};{r.TagText};{r.DuctTagSymName};{r.PipeTagSymName};{r.CableTrayTagSymName}");
             lines.Add($"ExtraRules={string.Join("|", ruleItems)}");
@@ -114,6 +245,9 @@ namespace MEPTools.MEPGroupTag
                 if (key == "Tolerance" && double.TryParse(val, out double t)) cfg.GroupToleranceMM = t;
                 else if (key == "LineSpacing" && double.TryParse(val, out double ls)) cfg.LineSpacingMM = ls;
                 else if (key == "BlankLines" && int.TryParse(val, out int bl)) cfg.BlankLines = bl;
+                else if (key == "MainDuctTag") cfg.MainDuctTagSymName = val;
+                else if (key == "MainPipeTag") cfg.MainPipeTagSymName = val;
+                else if (key == "MainTrayTag") cfg.MainTrayTagSymName = val;
                 else if (key == "ExtraRules")
                 {
                     var items = val.Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries);
@@ -134,6 +268,8 @@ namespace MEPTools.MEPGroupTag
                     }
                 }
             }
+            // 与 Load() 保持一致：组间空行下限 1
+            if (cfg.BlankLines < 1) cfg.BlankLines = 1;
             return cfg;
         }
     }
@@ -163,6 +299,7 @@ namespace MEPTools.MEPGroupTag
         
         private NumericUpDown nudTolerance, nudLineSpacing, nudBlankLines;
         private DataGridView dgvExtra;
+        private TextBox txtMainDuct, txtMainPipe, txtMainTray;
         private Button btnOk, btnImport, btnExport, btnClear;
         private Button btnInsert, btnUp, btnDown, btnDeleteRow; // 👈 新增删除按钮
 
@@ -181,7 +318,7 @@ namespace MEPTools.MEPGroupTag
         private void InitializeUI()
         {
             this.Text = "高度分组 TAG - 规则设置";
-            this.ClientSize = new Size(950, 580); 
+            this.ClientSize = new Size(950, 620); 
             this.StartPosition = FormStartPosition.CenterScreen;
             this.FormBorderStyle = FormBorderStyle.Sizable;
             this.MaximizeBox = true;
@@ -200,9 +337,37 @@ namespace MEPTools.MEPGroupTag
             this.Controls.Add(lblSpacing); this.Controls.Add(nudLineSpacing);
 
             var lblBlank = new Label { Text = "组间空行数:", Location = new Point(480, y + 3), AutoSize = true };
-            nudBlankLines = new NumericUpDown { Location = new Point(570, y), Width = 80, Minimum = 0, Maximum = 10 };
+            // 下限 1：组间空行为 0 时不同高度的组会紧挨一起，用户无法区分组
+            nudBlankLines = new NumericUpDown { Location = new Point(570, y), Width = 80, Minimum = 1, Maximum = 10 };
             this.Controls.Add(lblBlank); this.Controls.Add(nudBlankLines);
-            y += gap + 10;
+            y += gap;
+
+            // 主行 Tag 族：所有高度组共用；留空 = 沿用视图内已有 Tag 的类型
+            var lblMainDuct = new Label { Text = "主行 DUCT Tag 族:", Location = new Point(labelX, y + 3), AutoSize = true };
+            txtMainDuct = new TextBox { Location = new Point(labelX + 120, y), Width = 190 };
+            txtMainDuct.DoubleClick += (s, e) => PickTagSymbol(txtMainDuct, _ductTagsAll);
+            this.Controls.Add(lblMainDuct); this.Controls.Add(txtMainDuct);
+
+            var lblMainPipe = new Label { Text = "PIPE 族:", Location = new Point(labelX + 335, y + 3), AutoSize = true };
+            txtMainPipe = new TextBox { Location = new Point(labelX + 400, y), Width = 170 };
+            txtMainPipe.DoubleClick += (s, e) => PickTagSymbol(txtMainPipe, _pipeTagsAll);
+            this.Controls.Add(lblMainPipe); this.Controls.Add(txtMainPipe);
+
+            var lblMainTray = new Label { Text = "TRAY 族:", Location = new Point(labelX + 590, y + 3), AutoSize = true };
+            txtMainTray = new TextBox { Location = new Point(labelX + 655, y), Width = 235 };
+            txtMainTray.DoubleClick += (s, e) => PickTagSymbol(txtMainTray, _trayTagsAll);
+            this.Controls.Add(lblMainTray); this.Controls.Add(txtMainTray);
+            y += 28;
+
+            var lblMainHint = new Label
+            {
+                Text = "留空 = 沿用视图内已有 Tag 的类型；双击输入框可搜索族和类型",
+                Location = new Point(labelX, y),
+                AutoSize = true,
+                ForeColor = Color.Gray
+            };
+            this.Controls.Add(lblMainHint);
+            y += 26;
 
             var lblExtra = new Label { Text = "组前/组后附加标签设定 (提示：双击右侧三个族列可弹出大窗口搜索):", Location = new Point(labelX, y), AutoSize = true, Font = new Font(this.Font, FontStyle.Bold), ForeColor = Color.DarkBlue };
             this.Controls.Add(lblExtra); y += 25;
@@ -369,6 +534,32 @@ namespace MEPTools.MEPGroupTag
 
         // ================= 其他原有逻辑 =================
 
+        // 把配置里的族名规范化为当前文档精确的"族名: 类型名"；对不上则原样保留并记入 unmatched
+        private static string CanonicalTagName(List<string> pool, string value, string label, List<string> unmatched)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return "";
+            string note;
+            string key = TagTypeNameMatcher.Resolve(pool, value, out note);
+            if (key == null)
+            {
+                unmatched.Add($"{label}：{value}");
+                return value;
+            }
+            return key;
+        }
+
+        private void PickTagSymbol(TextBox box, List<string> dataSource)
+        {
+            if (dataSource == null) return;
+            using (var searchForm = new TagSearchForm(dataSource))
+            {
+                if (searchForm.ShowDialog() == DialogResult.OK && !string.IsNullOrEmpty(searchForm.SelectedResult))
+                {
+                    box.Text = searchForm.SelectedResult;
+                }
+            }
+        }
+
         private void DgvExtra_CellDoubleClick(object sender, DataGridViewCellEventArgs e)
         {
             if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
@@ -397,7 +588,11 @@ namespace MEPTools.MEPGroupTag
         {
             nudTolerance.Value = (decimal)_config.GroupToleranceMM;
             nudLineSpacing.Value = (decimal)_config.LineSpacingMM;
-            nudBlankLines.Value = _config.BlankLines;
+            nudBlankLines.Value = Math.Max(1, _config.BlankLines);
+
+            txtMainDuct.Text = _config.MainDuctTagSymName ?? "";
+            txtMainPipe.Text = _config.MainPipeTagSymName ?? "";
+            txtMainTray.Text = _config.MainTrayTagSymName ?? "";
 
             _ductTagsAll.Clear();
             _pipeTagsAll.Clear();
@@ -445,6 +640,9 @@ namespace MEPTools.MEPGroupTag
                 nudTolerance.Value = 25.0m;
                 nudLineSpacing.Value = 200.0m;
                 nudBlankLines.Value = 2;
+                txtMainDuct.Text = "";
+                txtMainPipe.Text = "";
+                txtMainTray.Text = "";
             }
         }
 
@@ -457,17 +655,51 @@ namespace MEPTools.MEPGroupTag
                     var newConfig = GroupTagConfig.LoadFromFile(ofd.FileName);
                     if (newConfig != null)
                     {
+                        // 导入即校验：按当前文档实际存在的族类型把旧配置里的族名规范化一次，
+                        // 能在当前模型里对上的直接改成精确的"族名: 类型名"，对不上的收集起来提示用户
+                        var unmatched = new List<string>();
+                        newConfig.MainDuctTagSymName = CanonicalTagName(_ductTagsAll, newConfig.MainDuctTagSymName, "主行 DUCT 族", unmatched);
+                        newConfig.MainPipeTagSymName = CanonicalTagName(_pipeTagsAll, newConfig.MainPipeTagSymName, "主行 PIPE 族", unmatched);
+                        newConfig.MainTrayTagSymName = CanonicalTagName(_trayTagsAll, newConfig.MainTrayTagSymName, "主行 TRAY 族", unmatched);
+
+                        foreach (var rule in newConfig.ExtraRules)
+                        {
+                            string row = string.IsNullOrEmpty(rule.TagText) ? rule.GroupIndex : $"{rule.GroupIndex} {rule.TagText}";
+                            rule.DuctTagSymName = CanonicalTagName(_ductTagsAll, rule.DuctTagSymName, row + " · DUCT", unmatched);
+                            rule.PipeTagSymName = CanonicalTagName(_pipeTagsAll, rule.PipeTagSymName, row + " · PIPE", unmatched);
+                            rule.CableTrayTagSymName = CanonicalTagName(_trayTagsAll, rule.CableTrayTagSymName, row + " · TRAY", unmatched);
+                        }
+
                         _config.GroupToleranceMM = newConfig.GroupToleranceMM;
                         _config.LineSpacingMM = newConfig.LineSpacingMM;
                         _config.BlankLines = newConfig.BlankLines;
+                        // 旧版本导出的配置文件里没有 MainDuctTag/MainPipeTag/MainTrayTag 三项，
+                        // 导入时若为空则保留当前设置，避免把已经配好的主行族清空
+                        if (!string.IsNullOrWhiteSpace(newConfig.MainDuctTagSymName)) _config.MainDuctTagSymName = newConfig.MainDuctTagSymName;
+                        if (!string.IsNullOrWhiteSpace(newConfig.MainPipeTagSymName)) _config.MainPipeTagSymName = newConfig.MainPipeTagSymName;
+                        if (!string.IsNullOrWhiteSpace(newConfig.MainTrayTagSymName)) _config.MainTrayTagSymName = newConfig.MainTrayTagSymName;
                         _config.ExtraRules = newConfig.ExtraRules;
 
                         nudTolerance.Value = (decimal)_config.GroupToleranceMM;
                         nudLineSpacing.Value = (decimal)_config.LineSpacingMM;
-                        nudBlankLines.Value = _config.BlankLines;
+                        nudBlankLines.Value = Math.Max(1, _config.BlankLines);
+
+                        txtMainDuct.Text = _config.MainDuctTagSymName ?? "";
+                        txtMainPipe.Text = _config.MainPipeTagSymName ?? "";
+                        txtMainTray.Text = _config.MainTrayTagSymName ?? "";
 
                         RefreshGrid();
                         InfoCenterTip.Show("配置导入成功，请点击【保存设置】生效。");
+
+                        if (unmatched.Count > 0)
+                        {
+                            string body = "以下 Tag 族在当前模型里找不到（多半是旧配置来自其它项目，或族名/类型名已经改过）：\n\n"
+                                + string.Join("\n", unmatched.Take(12))
+                                + (unmatched.Count > 12 ? $"\n… 共 {unmatched.Count} 项" : "")
+                                + "\n\n原值已保留，运行时这些行会自动回退到主行族。"
+                                + "请双击对应单元格，从当前模型的族里重新选择后点【保存设置】。";
+                            MessageBox.Show(body, "导入提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        }
                     }
                 }
             }
@@ -501,6 +733,10 @@ namespace MEPTools.MEPGroupTag
             _config.GroupToleranceMM = (double)nudTolerance.Value;
             _config.LineSpacingMM = (double)nudLineSpacing.Value;
             _config.BlankLines = (int)nudBlankLines.Value;
+
+            _config.MainDuctTagSymName = txtMainDuct.Text.Trim();
+            _config.MainPipeTagSymName = txtMainPipe.Text.Trim();
+            _config.MainTrayTagSymName = txtMainTray.Text.Trim();
 
             _config.ExtraRules.Clear();
             foreach (DataGridViewRow row in dgvExtra.Rows)

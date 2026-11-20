@@ -8,7 +8,7 @@ namespace MEPTools.FilterCopy.Models
     /// </summary>
     public class ViewTargetItem : ObservableObject
     {
-        private bool _isSelected = true;
+        private bool _isSelected = false;
         private string _templateName = string.Empty;
 
         public ElementId ViewId { get; set; }
