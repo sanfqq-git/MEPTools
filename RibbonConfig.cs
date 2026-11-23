@@ -81,7 +81,8 @@ namespace MEPTools
                 new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_MEPBatchBreak", Text = "批量打断管线", ToolTip = "批量执行保留原 ID 的打断并恢复连接", CommandType = typeof(MEPTools.MEPBatchBreak.Command), PulldownGroup = "修改工具" },
                 new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_RemoveDuplicateElements", Text = "删除重复图元", ToolTip = "查找并删除当前视图中重复的 MEP 图元", CommandType = typeof(MEPTools.RemoveDuplicateElements.Command), PulldownGroup = "修改工具" },
                 new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_ElevationRenamer", Text = "标高重命名", ToolTip = "批量重命名或规范化 Revit 标高名称", CommandType = typeof(MEPTools.RevitElevationRenamer.Command), PulldownGroup = "修改工具" },
-                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_SystemChecker", Text = "系统检查", ToolTip = "检查 MEP 系统的连通性及参数完整性", CommandType = typeof(MEPTools.SystemChecker.Command), PulldownGroup = "修改工具" },
+                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_SystemChecker", Text = "系统检查", ToolTip = "检查 MEP 系统的连通性及参数完整性", CommandType = typeof(MEPTools.MEPChecker.Command), PulldownGroup = "修改工具" },
+                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_LastChangedBy", Text = "修改者查询", ToolTip = "查询选中图元的所有者（借用状态）、最后修改者、创建者及与中心模型的同步状态", CommandType = typeof(MEPTools.MEPChecker.LastChangedByChecker), PulldownGroup = "修改工具" },
                 new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_DuctResize", Text = "DUCT更新尺寸", ToolTip = "更新 DUCT 尺寸", CommandType = typeof(MEPTools.DuctResize.Command), PulldownGroup = "修改工具" },
                 new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_RemakeInPlace", Text = "原地重制", ToolTip = "原地删除并重建或从 LINK 复制", CommandType = typeof(MEPTools.RemakeInPlaceCommands.Command), PulldownGroup = "修改工具" },
 

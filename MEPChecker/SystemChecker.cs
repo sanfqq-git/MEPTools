@@ -3,11 +3,13 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.UI;
+using Autodesk.Revit.UI.Selection;
+using MEPTools.Shared;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace MEPTools.SystemChecker
+namespace MEPTools.MEPChecker
 {
     /// <summary>
     /// 外部命令入口：检测用户选中的 Duct/CableTray 是否与其他系统的管错误连接。
@@ -24,40 +26,51 @@ namespace MEPTools.SystemChecker
             ref string message,
             ElementSet elements)
         {
-            UIApplication uiApp = commandData.Application;
-            UIDocument uidoc = uiApp.ActiveUIDocument;
+            UIApplication uiApp = commandData == null ? null : commandData.Application;
+            UIDocument uidoc = uiApp == null ? null : uiApp.ActiveUIDocument;
+
+            if (uidoc == null || uidoc.Document == null)
+            {
+                InfoCenterTip.Show("未找到活动文档，请先打开模型。");
+                return Result.Cancelled;
+            }
+
             Document doc = uidoc.Document;
+            MEPLogger.Instance.StartSession("SystemChecker");
 
             try
             {
-                ICollection<ElementId> selectedIds = uidoc.Selection.GetElementIds();
+                // 1. 取目标：有预选用预选；无预选提示后进入点选（SpaceKeyFinisher 空格结束）
+                //    只允许 Duct / CableTray，混选的其他图元由共享类自动忽略并提示数量
+                List<Element> targets = Preselected.GetSelectedElements(
+                    uidoc,
+                    new DuctOrCableTrayFilter(),
+                    "请选择要检测的 Duct 或 CableTray，按空格键结束",
+                    "请先在视图中选中要检测的 Duct 或 CableTray；也可直接点选，按空格键结束");
 
-                if (selectedIds.Count == 0)
+                if (targets == null || targets.Count == 0)
                 {
-                    TaskDialog.Show("系统检测",
-                        "请先在视图中选中要检测的 Duct 或 CableTray，再运行本命令。");
+                    // 共享类内部已给出气泡提示并 EndSession
                     return Result.Cancelled;
                 }
 
-                List<Element> targets = selectedIds
-                    .Select(id => doc.GetElement(id))
-                    .Where(e => e is Duct || e is CableTray)
-                    .ToList();
-
-                if (targets.Count == 0)
+                MEPLogger.Instance.AppendLine("文档：" + doc.Title);
+                MEPLogger.Instance.AppendLine("目标图元：" + targets.Count + " 个");
+                foreach (Element target in targets)
                 {
-                    TaskDialog.Show("系统检测",
-                        "选中的元素中没有 Duct 或 CableTray，请重新选择。");
-                    return Result.Cancelled;
+                    MEPLogger.Instance.AppendLine("  [" + target.Id.IntegerValue + "] " + target.Name);
                 }
 
+                // 2. 检测逻辑完全不变
                 var checker = new MismatchConnectionChecker();
                 List<MismatchResult> results = checker.FindMismatchedConnections(targets);
 
                 if (results.Count == 0)
                 {
-                    TaskDialog.Show("系统检测",
-                        string.Format("已检查 {0} 个图元，未发现系统不匹配的连接。", targets.Count));
+                    InfoCenterTip.Show(string.Format(
+                        "已检查 {0} 个图元，未发现系统不匹配的连接。", targets.Count));
+                    MEPLogger.Instance.EndSession(string.Format(
+                        "OK: {0} targets, no mismatch.", targets.Count));
                     return Result.Succeeded;
                 }
 
@@ -91,13 +104,38 @@ namespace MEPTools.SystemChecker
                     window.Show();
                 }
 
+                // 重要结果用气泡提示（原来这里是任务对话框）
+                InfoCenterTip.Show(string.Format(
+                    "发现 {0} 处系统不匹配，请查看窗口。", results.Count));
+                MEPLogger.Instance.EndSession(string.Format(
+                    "OK: {0} targets, {1} mismatches.", targets.Count, results.Count));
+
                 return Result.Succeeded;
             }
             catch (Exception ex)
             {
+                MEPLogger.Instance.LogException("SystemChecker.Execute", ex);
                 message = ex.Message;
+                InfoCenterTip.Show("检测失败，请查看日志。");
                 return Result.Failed;
             }
+        }
+    }
+
+    /// <summary>
+    /// 选择过滤器：只允许选择 Duct / CableTray（预选过滤 + 点选过滤共用）。
+    /// </summary>
+    internal class DuctOrCableTrayFilter : ISelectionFilter
+    {
+        public bool AllowElement(Element elem)
+        {
+            return elem is Duct || elem is CableTray;
+        }
+
+        public bool AllowReference(Reference reference, XYZ position)
+        {
+            // 只允许选择整个图元，不允许选面 / 边
+            return false;
         }
     }
 

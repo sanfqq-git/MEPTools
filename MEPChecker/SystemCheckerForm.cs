@@ -9,7 +9,7 @@ using Color = System.Drawing.Color;
 using Panel = System.Windows.Forms.Panel;
 using Point = System.Drawing.Point;
 
-namespace MEPTools.SystemChecker
+namespace MEPTools.MEPChecker
 {
     /// <summary>
     /// 结果展示窗口（WinForms 版本）。
