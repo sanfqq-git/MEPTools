@@ -1,7 +1,8 @@
-﻿﻿
+﻿
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using System.Windows.Forms;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
@@ -116,10 +117,19 @@ namespace MEPTools.ExportTools.ExportSchedule
         {
             TableData data = schedule.GetTableData();
             List<List<string>> rows = new List<List<string>>();
+            CellReadStats stats = new CellReadStats();
 
-            AppendSection(data, SectionType.Header, rows);
-            AppendSection(data, SectionType.Body, rows);
-            AppendSection(data, SectionType.Summary, rows);
+            int headerRows = AppendSection(schedule, data, SectionType.Header, rows, stats);
+            int bodyRows = AppendSection(schedule, data, SectionType.Body, rows, stats);
+            int summaryRows = AppendSection(schedule, data, SectionType.Summary, rows, stats);
+
+            // 表头段里"整行全空"的行（分组表头那类）不留，否则 Excel 第一行是空白行；
+            // 只丢整行全空的行，任何有内容的单元格都不动。
+            while (headerRows > 0 && rows.Count > 1 && IsRowEmpty(rows[0]))
+            {
+                rows.RemoveAt(0);
+                headerRows--;
+            }
 
             if (rows.Count == 0)
             {
@@ -128,41 +138,245 @@ namespace MEPTools.ExportTools.ExportSchedule
 
             SimpleTable table = SimpleTable.FromRows(rows);
             table.SheetName = schedule.Name;
+
+            LogTableDiagnostics(schedule, table, headerRows, bodyRows, summaryRows, stats);
             return table;
         }
 
-        private static void AppendSection(TableData data, SectionType sectionType, List<List<string>> rows)
+        private static int AppendSection(ViewSchedule schedule, TableData data, SectionType sectionType,
+                                         List<List<string>> rows, CellReadStats stats)
         {
             TableSectionData section;
             try
             {
                 section = data.GetSectionData(sectionType);
             }
-            catch
+            catch (Exception ex)
             {
+                MEPLogger.Instance.AppendLine(
+                    $"[明细表] {schedule.Name} 取 {sectionType} 段失败：{ex.GetType().Name}: {ex.Message}");
                 section = null;
             }
 
-            if (section == null || section.NumberOfRows <= 0 || section.NumberOfColumns <= 0) return;
+            if (section == null || section.NumberOfRows <= 0 || section.NumberOfColumns <= 0) return 0;
 
+            int columns = section.NumberOfColumns;
             for (int r = 0; r < section.NumberOfRows; r++)
             {
-                List<string> row = new List<string>();
-                for (int c = 0; c < section.NumberOfColumns; c++)
+                List<string> row = new List<string>(columns);
+                for (int c = 0; c < columns; c++)
                 {
-                    string text = string.Empty;
-                    try
-                    {
-                        text = section.GetCellText(r, c);
-                    }
-                    catch
-                    {
-                        text = string.Empty;
-                    }
-                    row.Add(text ?? string.Empty);
+                    row.Add(ReadCellText(schedule, section, sectionType, r, c, stats));
                 }
                 rows.Add(row);
             }
+
+            // 表体首行的单元格类型写进日志：以后再"丢数据"，一眼就能看出是第几列、什么类型。
+            if (sectionType == SectionType.Body)
+            {
+                LogColumnCellTypes(schedule, section);
+            }
+
+            return section.NumberOfRows;
+        }
+
+        /// <summary>
+        /// 读一个格子的文字。
+        /// 主通道是 TableView.GetCellText(SectionType, row, column)：明细表读格子文字就该用它，
+        /// 它返回"表上显示的文字"，与单元格类型无关（Parameter / CombinedParameter /
+        /// CalculatedValue / Inherited 都能取到）。
+        /// 原来用的 TableSectionData.GetCellText(r, c) 只对 Text / ParameterText 返回文字，
+        /// 其它类型一律返回空串 —— 这正是 Excel 里"整列整行不见了"的根因。
+        /// </summary>
+        private static string ReadCellText(ViewSchedule schedule, TableSectionData section, SectionType sectionType,
+                                           int row, int column, CellReadStats stats)
+        {
+            stats.Total++;
+
+            string text = null;
+            Exception error = null;
+
+            CellType cellType = CellType.Text;
+            try
+            {
+                cellType = section.GetCellType(row, column);
+            }
+            catch
+            {
+                // 取不到类型就当文本处理，走下面的老接口
+            }
+
+            // 快速通道：文本类格子沿用老接口，结果和以前完全一致，速度最省。
+            if (cellType == CellType.Text || cellType == CellType.ParameterText)
+            {
+                try
+                {
+                    text = section.GetCellText(row, column);
+                }
+                catch (Exception ex)
+                {
+                    error = ex;
+                    text = null;
+                }
+            }
+
+            // 其它类型（Parameter / CombinedParameter / CalculatedValue / Inherited …）走格式化接口。
+            if (string.IsNullOrEmpty(text))
+            {
+                try
+                {
+                    text = schedule.GetCellText(sectionType, row, column);
+                }
+                catch (Exception ex)
+                {
+                    if (error == null) error = ex;
+                    text = null;
+                }
+            }
+
+            // 兜底：合并单元格里非左上角的格子可能取不到文字，按 GetMergedCell 找左上角再取一次。
+            // 只回退一层，不递归，也不改表结构。
+            if (string.IsNullOrEmpty(text))
+            {
+                try
+                {
+                    TableMergedCell merged = section.GetMergedCell(row, column);
+                    if (merged != null
+                        && (merged.Top != row || merged.Left != column)
+                        && merged.Top >= 0 && merged.Left >= 0
+                        && merged.Top < section.NumberOfRows && merged.Left < section.NumberOfColumns)
+                    {
+                        string mergedText = schedule.GetCellText(sectionType, merged.Top, merged.Left);
+                        if (!string.IsNullOrEmpty(mergedText))
+                        {
+                            text = mergedText;
+                            stats.MergedRecovered++;
+                        }
+                    }
+                }
+                catch
+                {
+                    // 合并信息取不到就按空处理，不影响其它格子
+                }
+            }
+
+            if (error != null)
+            {
+                stats.Errors++;
+                if (stats.FirstError == null)
+                {
+                    stats.FirstError = error.GetType().Name + ": " + error.Message;
+                }
+            }
+
+            return text ?? string.Empty;
+        }
+
+        private static void LogColumnCellTypes(ViewSchedule schedule, TableSectionData section)
+        {
+            try
+            {
+                StringBuilder sb = new StringBuilder();
+                for (int c = 0; c < section.NumberOfColumns; c++)
+                {
+                    string typeName = "?";
+                    try
+                    {
+                        typeName = section.GetCellType(0, c).ToString();
+                    }
+                    catch
+                    {
+                        typeName = "?";
+                    }
+                    if (c > 0) sb.Append("，");
+                    sb.Append($"第{c + 1}列={typeName}");
+                }
+                MEPLogger.Instance.AppendLine($"[明细表] {schedule.Name} 表体首行单元格类型：{sb}");
+            }
+            catch
+            {
+                // 纯日志，出错不影响导出
+            }
+        }
+
+        private static void LogTableDiagnostics(ViewSchedule schedule, SimpleTable table,
+                                                int headerRows, int bodyRows, int summaryRows,
+                                                CellReadStats stats)
+        {
+            try
+            {
+                int width = table.ColumnCount;
+                foreach (List<string> row in table.Rows)
+                {
+                    if (row.Count > width) width = row.Count;
+                }
+
+                MEPLogger.Instance.AppendLine(
+                    $"[明细表] {schedule.Name} 结构：表头 {headerRows} 行 / 表体 {bodyRows} 行 / 汇总 {summaryRows} 行 / 共 {width} 列，读取单元格 {stats.Total} 个");
+
+                if (stats.Errors > 0)
+                {
+                    MEPLogger.Instance.AppendLine(
+                        $"[明细表] {schedule.Name} 读取异常 {stats.Errors} 个单元格，首个异常：{stats.FirstError}");
+                }
+
+                if (stats.MergedRecovered > 0)
+                {
+                    MEPLogger.Instance.AppendLine(
+                        $"[明细表] {schedule.Name} 合并单元格按左上角补回 {stats.MergedRecovered} 个");
+                }
+
+                List<string> emptyColumns = new List<string>();
+                for (int c = 0; c < width; c++)
+                {
+                    bool hasValue = false;
+                    for (int r = 0; r < table.Rows.Count; r++)
+                    {
+                        if (!string.IsNullOrEmpty(table.Cell(r, c)))
+                        {
+                            hasValue = true;
+                            break;
+                        }
+                    }
+
+                    if (!hasValue)
+                    {
+                        string header = c < table.ColumnCount ? table.Headers[c] : string.Empty;
+                        emptyColumns.Add(string.IsNullOrEmpty(header)
+                            ? $"第{c + 1}列"
+                            : $"第{c + 1}列「{header}」");
+                    }
+                }
+
+                if (emptyColumns.Count > 0)
+                {
+                    MEPLogger.Instance.AppendLine(
+                        $"[明细表] {schedule.Name} 警告：整列无数据 -> {string.Join("、", emptyColumns)}");
+                }
+            }
+            catch
+            {
+                // 纯日志，出错不影响导出
+            }
+        }
+
+        private static bool IsRowEmpty(List<string> row)
+        {
+            if (row == null) return true;
+            foreach (string value in row)
+            {
+                if (!string.IsNullOrEmpty(value)) return false;
+            }
+            return true;
+        }
+
+        /// <summary>本次明细表读取的统计，只用于写日志。</summary>
+        private sealed class CellReadStats
+        {
+            public int Total;
+            public int Errors;
+            public int MergedRecovered;
+            public string FirstError;
         }
     }
 }
