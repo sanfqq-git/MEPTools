@@ -1,12 +1,14 @@
 using System;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.Text;
 using System.Windows.Input;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using MEPTools.FilterCopy.Models;
 using MEPTools.FilterCopy.Services;
 using MEPTools.FilterCopy.Views;
+using MEPTools.Shared;
 
 namespace MEPTools.FilterCopy.ViewModels
 {
@@ -50,7 +52,7 @@ namespace MEPTools.FilterCopy.ViewModels
         public ICommand SelectNoneCommand { get; }
         public ICommand SelectNoTemplateCommand { get; }
 
-        /// <summary>执行完成后的回调（由 View 订阅，用于弹反馈框并关闭主窗）。</summary>
+        /// <summary>执行完成后的回调（结果先抛给外部记日志，再弹反馈窗）。</summary>
         public event EventHandler<TransferResult> Executed;
         /// <summary>请求关闭窗口；参数表示是否作为“成功执行”关闭。</summary>
         public event EventHandler<bool> RequestClose;
@@ -102,18 +104,13 @@ namespace MEPTools.FilterCopy.ViewModels
                 }
 
                 var result = _transferService.Result;
+
+                // 先把结果交给外部（命令里立即写日志），再做任何界面动作
                 Executed?.Invoke(this, result);
 
-                // 弹出反馈对话框：成功数量 + 模板跳过等日志
-                var feedback = new FeedbackWindow(new FeedbackViewModel(result));
-
-                // ★ 修复崩溃点：Revit 自身不创建 WPF Application 实例，
-                //   System.Windows.Application.Current 在 Revit 里恒为 null，
-                //   原写法 Application.Current.Windows 必然抛 NullReferenceException。
-                //   改为挂 Revit 主窗口句柄（ComponentManager.ApplicationWindow）。
-                AttachRevitOwner(feedback);
-
-                feedback.ShowDialog();
+                // 反馈窗：纯展示，任何异常都吞掉并降级，
+                // 绝不能因为“窗口打不开”把已提交的复制报成执行失败。
+                ShowResultSafely(result);
 
                 RequestClose?.Invoke(this, true);
             }
@@ -124,42 +121,60 @@ namespace MEPTools.FilterCopy.ViewModels
         }
 
         /// <summary>
-        /// 把 WPF 窗口挂到 Revit 主窗口上。
-        /// Revit 里没有 WPF Application 实例，绝不能用 Application.Current.Windows 取 Owner。
+        /// 弹执行结果窗；失败则降级为 TaskDialog 摘要，永不外抛。
         /// </summary>
-        private static void AttachRevitOwner(System.Windows.Window window)
+        private static void ShowResultSafely(TransferResult result)
         {
-            if (window == null) return;
-
             try
             {
-                // 1) 首选：Revit 主窗口句柄（AdWindows 的 ComponentManager.ApplicationWindow）
-                IntPtr hwnd = IntPtr.Zero;
-                try
-                {
-                    hwnd = Autodesk.Windows.ComponentManager.ApplicationWindow;
-                }
-                catch
-                {
-                    hwnd = IntPtr.Zero;
-                }
+                FeedbackForm.ShowResult(result, GetRevitMainWindowHandle());
+                return;
+            }
+            catch (Exception ex)
+            {
+                try { MEPLogger.Instance.AppendLine("[警告] 反馈窗口打开失败：" + ex.Message); }
+                catch { }
+            }
 
-                if (hwnd != IntPtr.Zero)
-                {
-                    new System.Windows.Interop.WindowInteropHelper(window).Owner = hwnd;
-                    return;
-                }
+            // 兜底：用 Revit 原生 TaskDialog 至少把摘要和关键明细给出来
+            try
+            {
+                TaskDialog.Show("执行结果", BuildFallbackText(result));
+            }
+            catch { }
+        }
 
-                // 2) 兜底：只有确实存在 WPF Application 时，才去找主窗口当 Owner
-                var app = System.Windows.Application.Current;
-                if (app == null) return;
+        private static string BuildFallbackText(TransferResult result)
+        {
+            int successCount = result == null ? 0 : result.SuccessCount;
+            var logs = result == null ? new System.Collections.Generic.List<string>() : result.Log;
 
-                var owner = app.Windows.OfType<Views.MainWindow>().FirstOrDefault();
-                if (owner != null && !ReferenceEquals(owner, window)) window.Owner = owner;
+            var sb = new StringBuilder();
+            sb.AppendLine("成功复制到 " + successCount + " 个视图；跳过 / 失败 " + logs.Count + " 项。");
+
+            const int maxLines = 20;
+            foreach (string line in logs.Take(maxLines))
+                sb.AppendLine(line);
+
+            if (logs.Count > maxLines)
+                sb.AppendLine("……（其余 " + (logs.Count - maxLines) + " 条见日志文件）");
+
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// 取 Revit 主窗口句柄（AdWindows 的 ComponentManager.ApplicationWindow）。
+        /// Revit 里没有 WPF Application 实例，绝不能用 Application.Current.Windows 取 Owner。
+        /// </summary>
+        private static IntPtr GetRevitMainWindowHandle()
+        {
+            try
+            {
+                return Autodesk.Windows.ComponentManager.ApplicationWindow;
             }
             catch
             {
-                // 挂不上 Owner 不影响功能，静默忽略
+                return IntPtr.Zero;
             }
         }
     }

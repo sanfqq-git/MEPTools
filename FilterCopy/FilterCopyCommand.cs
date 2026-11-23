@@ -20,7 +20,7 @@ namespace MEPTools.FilterCopy.Commands
     /// B 功能：复制 View Filter 到目标视图 —— 独立命令。
     /// 来源两种：① 从视图样板复制　② 从用户选择的源视图复制（窗体里单选切换）。
     /// 流程：StartSession → FilterCopyForm 选来源 + 勾目标 → 校验 → MainViewModel
-    ///      （单一事务 + ApplyToTarget 安全策略 + FeedbackWindow）→ EndSession + 气泡。
+    ///      （单一事务 + ApplyToTarget 安全策略 + FeedbackForm 结果窗）→ EndSession + 气泡。
     /// </summary>
     [Transaction(TransactionMode.Manual)]
     [Regeneration(RegenerationOption.Manual)]
@@ -124,11 +124,21 @@ namespace MEPTools.FilterCopy.Commands
                         (t.HasTemplate ? "，模板：" + t.TemplateName : "") + "）");
                 }
 
-                // ── 4. 原执行管道（MainViewModel / 事务 / 安全策略 / FeedbackWindow）一行未改 ──
+                // ── 4. 原执行管道（MainViewModel / 事务 / 安全策略）一行未改；结果窗改为 WinForms ──
                 var vm = new MainViewModel(doc, sourceView, targets) { OverrideMode = overrideMode };
 
                 TransferResult result = null;
-                EventHandler<TransferResult> onExecuted = (s, e) => result = e;
+                EventHandler<TransferResult> onExecuted = (s, e) =>
+                {
+                    result = e;
+
+                    // 结果一产生就落日志：即使后面弹窗出问题，明细也不会丢
+                    if (e != null)
+                    {
+                        foreach (string line in e.Log)
+                            MEPLogger.Instance.AppendLine(line);
+                    }
+                };
                 vm.Executed += onExecuted;
                 try
                 {
@@ -141,12 +151,6 @@ namespace MEPTools.FilterCopy.Commands
 
                 int okCount = result == null ? 0 : result.SuccessCount;
                 int skipCount = result == null ? 0 : result.Log.Count;
-
-                if (result != null)
-                {
-                    foreach (string line in result.Log)
-                        MEPLogger.Instance.AppendLine(line);
-                }
 
                 summary = "已复制到 " + okCount + " 个视图，跳过/失败 " + skipCount + " 项。";
                 InfoCenterTip.Show(summary);
