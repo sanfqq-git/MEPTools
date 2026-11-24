@@ -1,6 +1,7 @@
 ﻿
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Windows.Forms;
@@ -15,7 +16,7 @@ namespace MEPTools.ExportTools.ExportSchedule
 {
     /// <summary>
     /// 明细表内容导出 → Excel（.xlsx），一次性导出、不做回写。
-    /// 勾选哪些明细表就导哪些，一个明细表 = 一个 Sheet。
+    /// 勾选哪些明细表就导哪些，一个明细表 = 一个 Excel 文件（文件名跟随明细表名，里面就一个同名 Sheet）。
     /// 注意：明细表数据由 Revit 计算生成，导出的是只读快照，改 Excel 不会（也不该）返回模型；
     /// 需要"改完导回模型"的是图纸 / 视图这两条线（对应各自的导入命令）。
     /// 取值直接读 ViewSchedule 的表体数据，不经过 Revit 自带的 .txt/.csv 导出。
@@ -58,20 +59,27 @@ namespace MEPTools.ExportTools.ExportSchedule
                     });
                 }
 
+                // 项目浏览器里预选的明细表 → 直接带进窗体勾选（Revit 把浏览器中选中的视图也放进 Selection）
+                List<string> preselectedKeys = GetPreselectedScheduleKeys(uiapp.ActiveUIDocument, schedules);
+
+                string formHint = preselectedKeys.Count > 0
+                    ? $"已带入项目浏览器预选的 {preselectedKeys.Count} 张明细表，可继续勾选其它；文件名跟随明细表名"
+                    : "勾选后每个明细表导出一个 Excel，文件名跟随明细表名（只读快照，不回写模型）";
+
                 List<string> keys;
                 string folder;
 
-                using (var form = new ExportListForm(items, "选择要导出的明细表",
-                    "勾选后导出为 Excel：一个明细表一个 Sheet（只读快照，不回写模型）",
-                    true, LinkSelectionForm.GetDefaultOutputFolder()))
+                using (var form = new ExportListForm(items, "选择要导出的明细表", formHint,
+                    true, LinkSelectionForm.GetDefaultOutputFolder(), preselectedKeys))
                 {
                     if (form.ShowDialog() != DialogResult.OK) return Result.Cancelled;
                     keys = form.SelectedKeys;
                     folder = form.OutputFolder;
                 }
 
-                List<SimpleTable> sheets = new List<SimpleTable>();
                 int skipped = 0;
+                int failed = 0;
+                int saved = 0;
 
                 foreach (string key in keys)
                 {
@@ -85,23 +93,40 @@ namespace MEPTools.ExportTools.ExportSchedule
                     if (table == null) { skipped++; continue; }
 
                     MEPLogger.Instance.AppendLine($"[明细表] {schedule.Name} 已读取 {table.Rows.Count} 行");
-                    sheets.Add(table);
+
+                    // 一个明细表 = 一个 Excel 文件；文件名 = 明细表名（非法字符换 _，
+                    // 同名已存在时由 GetUniquePath 补 _1/_2，不覆盖已有文件）
+                    string path = ExportFileUtils.GetUniquePath(folder, BuildFileName(schedule));
+                    try
+                    {
+                        XlsxTableStore.Save(path, table);
+                        saved++;
+                        MEPLogger.Instance.AppendLine($"[明细表] {schedule.Name} → {Path.GetFileName(path)}");
+                    }
+                    catch (Exception ex)
+                    {
+                        failed++;
+                        MEPLogger.Instance.LogException("ExportSchedule.Save", ex);
+                        MEPLogger.Instance.AppendLine(
+                            $"[明细表] {schedule.Name} 写文件失败：{ex.GetType().Name}: {ex.Message}");
+                    }
                 }
 
-                if (sheets.Count == 0)
+                if (saved == 0)
                 {
-                    TaskDialog.Show("导出明细表", "没有取到任何明细表内容。");
-                    return Result.Cancelled;
+                    TaskDialog.Show("导出明细表", failed > 0
+                        ? "明细表内容读到了，但写 Excel 全部失败，请查看日志。"
+                        : "没有取到任何明细表内容。");
+                    MEPLogger.Instance.EndSession($"Failed: Keys={keys.Count}, Skipped={skipped}, Failed={failed}");
+                    return failed > 0 ? Result.Failed : Result.Cancelled;
                 }
 
-                string fileName = "明细表_" + DateTime.Now.ToString("yyyyMMdd_HHmm") + ".xlsx";
-                string path = ExportFileUtils.GetUniquePath(folder, fileName);
-                XlsxTableStore.Save(path, sheets);
-
-                MEPLogger.Instance.EndSession($"Done: Sheets={sheets.Count}");
+                MEPLogger.Instance.EndSession($"Done: Files={saved}, Skipped={skipped}, Failed={failed}");
                 TaskDialog.Show("导出明细表",
-                    $"明细表导出完成。\n导出 {sheets.Count} 个" + (skipped > 0 ? $"，跳过 {skipped} 个" : "") +
-                    $"\n\n📁 {path}\n\n💡 每个明细表对应一个 Sheet（只读快照，改 Excel 不会回写模型）。");
+                    $"明细表导出完成。\n共导出 {saved} 个 Excel 文件" +
+                    (skipped > 0 ? $"，跳过 {skipped} 个明细表" : "") +
+                    (failed > 0 ? $"，{failed} 个写文件失败（见日志）" : "") +
+                    $"\n\n📁 {folder}\n\n💡 文件名=明细表名（只读快照，改 Excel 不会回写模型）。");
                 return Result.Succeeded;
             }
             catch (Exception ex)
@@ -110,6 +135,65 @@ namespace MEPTools.ExportTools.ExportSchedule
                 InfoCenterTip.Show("明细表导出失败，请查看日志。");
                 return Result.Failed;
             }
+        }
+
+        /// <summary>
+        /// 取"项目浏览器里预选的明细表"。
+        /// Revit 会把项目浏览器中选中的视图同样放进 Selection.GetElementIds()，所以直接读当前选择，
+        /// 只保留本次列表里那批（非样板、ViewType=Schedule）的明细表，其它类别/样板一律忽略。
+        /// 返回空 = 没有预选，窗体照旧默认全选。
+        /// </summary>
+        private static List<string> GetPreselectedScheduleKeys(UIDocument uidoc, List<ViewSchedule> schedules)
+        {
+            List<string> keys = new List<string>();
+            if (uidoc == null || schedules == null || schedules.Count == 0) return keys;
+
+            ICollection<ElementId> selectedIds;
+            try
+            {
+                selectedIds = uidoc.Selection.GetElementIds();
+            }
+            catch
+            {
+                // 选择读不到就当没有预选，不影响后续出窗体
+                return keys;
+            }
+
+            if (selectedIds == null || selectedIds.Count == 0) return keys;
+
+            HashSet<int> scheduleIdValues = new HashSet<int>();
+            foreach (ViewSchedule schedule in schedules) scheduleIdValues.Add(schedule.Id.IntegerValue);
+
+            HashSet<int> added = new HashSet<int>();
+            foreach (ElementId id in selectedIds)
+            {
+                int value = id.IntegerValue;
+                if (!scheduleIdValues.Contains(value)) continue;
+                if (!added.Add(value)) continue;
+                keys.Add(value.ToString());
+            }
+
+            MEPLogger.Instance.AppendLine(
+                $"[预选] 当前选中 {selectedIds.Count} 个图元，其中明细表 {keys.Count} 张已带入勾选");
+
+            return keys;
+        }
+
+        /// <summary>
+        /// 输出文件名 = 明细表名 + .xlsx（不再带时间戳）。
+        /// 非法字符（\ / : * ? " &lt; &gt; |）由 SafeFileName 换成 _；过长截断，避免超 Windows 路径长度。
+        /// </summary>
+        private static string BuildFileName(ViewSchedule schedule)
+        {
+            string rawName = (schedule != null && !string.IsNullOrWhiteSpace(schedule.Name))
+                ? schedule.Name
+                : "明细表";
+
+            string name = ExportFileUtils.SafeFileName(rawName);
+            if (string.IsNullOrWhiteSpace(name) || name == "Model") name = "明细表";
+            if (name.Length > 120) name = name.Substring(0, 120).Trim();
+
+            return name + ".xlsx";
         }
 
         /// <summary>表头 + 表体 + 汇总各段依次取出，原样拼成一张表（合并单元格只取左上角文本）。</summary>

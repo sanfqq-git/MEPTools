@@ -22,6 +22,7 @@ namespace MEPTools.ExportTools.Common
     public class ExportListForm : System.Windows.Forms.Form
     {
         private TextBox _txtSearch;
+        private CheckBox _chkOnlyChecked;
         private CheckedListBox _checkedListBox;
         private TextBox _txtOutputFolder;
         private Button _btnBrowse;
@@ -33,23 +34,43 @@ namespace MEPTools.ExportTools.Common
         private readonly List<ExportListItem> _allItems = new List<ExportListItem>();
         private readonly HashSet<string> _checkedKeys = new HashSet<string>();
         private bool _isRefreshing = false;
+        private bool _onlyChecked = false;
 
         public List<string> SelectedKeys { get; private set; }
         public string OutputFolder { get; private set; }
 
         public ExportListForm(IList<ExportListItem> items, string title, string hint,
-            bool defaultCheckAll, string defaultOutputFolder)
+            bool defaultCheckAll, string defaultOutputFolder, IList<string> preselectedKeys = null)
         {
             SelectedKeys = new List<string>();
             OutputFolder = string.Empty;
+
+            // 预选优先：有预选就只勾预选的，defaultCheckAll 只在"没预选 / 预选一个都对不上"时生效。
+            HashSet<string> preselected = null;
+            if (preselectedKeys != null && preselectedKeys.Count > 0)
+                preselected = new HashSet<string>(preselectedKeys);
 
             if (items != null)
             {
                 foreach (ExportListItem item in items)
                 {
                     _allItems.Add(item);
-                    if (defaultCheckAll) _checkedKeys.Add(item.Key);
+                    if (preselected != null)
+                    {
+                        if (preselected.Contains(item.Key)) _checkedKeys.Add(item.Key);
+                    }
+                    else if (defaultCheckAll)
+                    {
+                        _checkedKeys.Add(item.Key);
+                    }
                 }
+            }
+
+            // 预选区里的东西一个都不在列表里（比如选中的是样板/内部明细表）时，退回原来的默认全选，
+            // 避免用户打开窗体看到"一个都没勾"以为命令坏了。
+            if (_checkedKeys.Count == 0 && defaultCheckAll)
+            {
+                foreach (ExportListItem item in _allItems) _checkedKeys.Add(item.Key);
             }
 
             InitializeComponent(title, hint, defaultOutputFolder);
@@ -65,12 +86,27 @@ namespace MEPTools.ExportTools.Common
             MaximizeBox = false;
             MinimizeBox = false;
 
-            var panelTop = new System.Windows.Forms.Panel { Dock = DockStyle.Top, Height = 40 };
+            var panelTop = new System.Windows.Forms.Panel { Dock = DockStyle.Top, Height = 68 };
             var lblSearch = new Label { Text = "搜索:", Location = new Point(10, 13), AutoSize = true };
             _txtSearch = new TextBox { Location = new Point(55, 10), Width = 390 };
             _txtSearch.TextChanged += (s, e) => RefreshList();
+
+            // 辅助勾选框：只显示已勾选的项（纯显示过滤，不影响勾选结果本身）
+            _chkOnlyChecked = new CheckBox
+            {
+                Text = "只显示已勾选（隐藏未勾选）",
+                Location = new Point(55, 38),
+                AutoSize = true
+            };
+            _chkOnlyChecked.CheckedChanged += (s, e) =>
+            {
+                _onlyChecked = _chkOnlyChecked.Checked;
+                RefreshList();
+            };
+
             panelTop.Controls.Add(lblSearch);
             panelTop.Controls.Add(_txtSearch);
+            panelTop.Controls.Add(_chkOnlyChecked);
 
             var panelHint = new System.Windows.Forms.Panel { Dock = DockStyle.Bottom, Height = 24 };
             var lblHint = new Label
@@ -177,10 +213,22 @@ namespace MEPTools.ExportTools.Common
 
             if (e.NewValue == CheckState.Checked) _checkedKeys.Add(item.Key);
             else _checkedKeys.Remove(item.Key);
+
+            // 开了"只显示已勾选"时，刚取消勾选的这一项要立刻从列表里消失。
+            // ItemCheck 是在勾选状态还没提交时触发的，此刻直接重建 Items 会打断勾选流程，
+            // 所以推迟一轮消息循环（等状态提交完）再刷新。
+            if (_onlyChecked && e.NewValue == CheckState.Unchecked && IsHandleCreated && !IsDisposed)
+            {
+                // 窗体正在关闭时别再排刷新，避免句柄已释放的异常
+                try { BeginInvoke(new Action(RefreshList)); }
+                catch { }
+            }
         }
 
         private void RefreshList()
         {
+            if (IsDisposed) return;
+
             _isRefreshing = true;
             string keyword = _txtSearch.Text.Trim();
             _checkedListBox.Items.Clear();
@@ -189,6 +237,8 @@ namespace MEPTools.ExportTools.Common
             {
                 if (!string.IsNullOrEmpty(keyword) &&
                     item.Name.IndexOf(keyword, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                // 只显示已勾选：未勾选的项不显示（勾选结果本身仍保存在 _checkedKeys 里，不会丢）
+                if (_onlyChecked && !_checkedKeys.Contains(item.Key)) continue;
                 _checkedListBox.Items.Add(new ListRow(item), _checkedKeys.Contains(item.Key));
             }
             _isRefreshing = false;
