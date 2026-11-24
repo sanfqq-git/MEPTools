@@ -5,6 +5,7 @@ using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
+using Autodesk.Revit.DB.Electrical;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
 using MEPTools.Shared;
@@ -61,7 +62,7 @@ namespace MEPTools.MEP3TeeConnect
                 if (!hasPreSelection)
                 {
                     log.AppendLine("未检测到有效预选 → 进入 A 组交互选择");
-                    InfoCenterTip.Show("请选择 A 组 MEP 管（Pipe/Duct），按空格完成");
+                    InfoCenterTip.Show("请选择 A 组 MEP 管（Pipe / Duct / CableTray），按空格完成");
 
                     IList<Reference> aRefs;
                     try
@@ -72,7 +73,7 @@ namespace MEPTools.MEP3TeeConnect
                             aRefs = uidoc.Selection.PickObjects(
                                 ObjectType.Element,
                                 new AnyMEPCurveFilter(),
-                                "请选择 A 组（Pipe/Duct，需同类型），选完按空格完成");
+                                "请选择 A 组（Pipe / Duct / CableTray，需同类型），选完按空格完成");
                         }
                     }
                     catch (Autodesk.Revit.Exceptions.OperationCanceledException)
@@ -100,7 +101,7 @@ namespace MEPTools.MEP3TeeConnect
                     if (groupA.Count == 0)
                     {
                         log.EndSession("A 组无有效元素");
-                        InfoCenterTip.Show("A 组未包含有效的 Pipe 或 Duct");
+                        InfoCenterTip.Show("A 组未包含有效的 Pipe / Duct / CableTray");
                         return Result.Failed;
                     }
                     log.AppendLine($"✓ A 组：{groupA.Count} 个元素，类型 = {commonType}");
@@ -434,10 +435,10 @@ namespace MEPTools.MEP3TeeConnect
             return $"Ø{dia * f:F0}";
         }
 
-        /// <summary>A 组无预选时使用：允许 Pipe 与 Duct 混选，后续按首元素类型过滤</summary>
+        /// <summary>A 组无预选时使用：允许 Pipe / Duct / CableTray 混选，后续按首元素类型过滤</summary>
         private class AnyMEPCurveFilter : ISelectionFilter
         {
-            public bool AllowElement(Element e) => e is Pipe || e is Duct;
+            public bool AllowElement(Element e) => e is Pipe || e is Duct || e is CableTray;
             public bool AllowReference(Reference r, XYZ p) => true;
         }
 
@@ -451,6 +452,7 @@ namespace MEPTools.MEP3TeeConnect
                 {
                     case TeeElementType.Pipe: return e is Pipe;
                     case TeeElementType.Duct: return e is Duct;
+                    case TeeElementType.CableTray: return e is CableTray;
                 }
                 return false;
             }

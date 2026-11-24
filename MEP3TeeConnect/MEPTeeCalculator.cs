@@ -4,10 +4,11 @@ using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
+using Autodesk.Revit.DB.Electrical;
 
 namespace MEPTools.MEP3TeeConnect
 {
-    public enum TeeElementType { Pipe, Duct, Unknown }
+    public enum TeeElementType { Pipe, Duct, CableTray, Unknown }
 
     /// <summary>一对 T 形配对</summary>
     public class TeePair
@@ -68,8 +69,12 @@ namespace MEPTools.MEP3TeeConnect
         {
             if (e is Pipe) return TeeElementType.Pipe;
             if (e is Duct) return TeeElementType.Duct;
+            if (e is CableTray) return TeeElementType.CableTray;
             return TeeElementType.Unknown;
         }
+
+        /// <summary>线槽无系统类型时的分组名（按选择顺序配对）</summary>
+        public const string CableTraySystemName = "线槽（按选择顺序配对）";
 
         public static ElementId GetSystemTypeId(Element e, TeeElementType t)
         {
@@ -81,18 +86,25 @@ namespace MEPTools.MEP3TeeConnect
                 case TeeElementType.Duct:
                     return e.get_Parameter(BuiltInParameter.RBS_DUCT_SYSTEM_TYPE_PARAM)?.AsElementId()
                         ?? ElementId.InvalidElementId;
+                case TeeElementType.CableTray:
+                    // 线槽不走系统类型（CableTray.Create 不需要），分组见 GetSystemName
+                    return ElementId.InvalidElementId;
             }
             return ElementId.InvalidElementId;
         }
 
         public static string GetSystemName(Document doc, Element e, TeeElementType t)
         {
+            // ★ 线槽在 Revit 里没有管/风管那样的系统类型，用固定分组名，
+            //   分组后仍按"选择顺序"一一配对，与原有配对规则一致。
+            if (t == TeeElementType.CableTray) return CableTraySystemName;
+
             var sid = GetSystemTypeId(e, t);
             if (sid == ElementId.InvalidElementId) return null;
             return doc.GetElement(sid)?.Name;
         }
 
-        /// <summary>等效"管径"：Pipe→公称直径；Duct→矩形取高度/圆形取直径</summary>
+        /// <summary>等效"管径"：Pipe→公称直径；Duct→矩形取高度/圆形取直径；CableTray→取高度</summary>
         public static double GetDiameter(Element e, TeeElementType t)
         {
             if (t == TeeElementType.Pipe)
@@ -106,6 +118,12 @@ namespace MEPTools.MEP3TeeConnect
                 if (w > 1e-9 && h > 1e-9) return h;
                 return d;
             }
+
+            if (t == TeeElementType.CableTray)
+            {
+                // 线槽一定是矩形截面：等效直径取高度
+                return e.get_Parameter(BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM)?.AsDouble() ?? 0;
+            }
             return 0;
         }
 
@@ -118,6 +136,8 @@ namespace MEPTools.MEP3TeeConnect
                 if (d > 1e-9 && w <= 1e-9) return 0;
                 return w;
             }
+            if (t == TeeElementType.CableTray)
+                return e.get_Parameter(BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM)?.AsDouble() ?? 0;
             return 0;
         }
 
@@ -134,6 +154,8 @@ namespace MEPTools.MEP3TeeConnect
                 double h = e.get_Parameter(BuiltInParameter.RBS_CURVE_HEIGHT_PARAM)?.AsDouble() ?? 0;
                 return (w > 1e-9 && h > 1e-9) ? h : d;
             }
+            if (t == TeeElementType.CableTray)
+                return e.get_Parameter(BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM)?.AsDouble() ?? 0;
             return GetDiameter(e, t);
         }
 
@@ -262,6 +284,10 @@ namespace MEPTools.MEP3TeeConnect
             {
                 catFilters.Add(new ElementCategoryFilter(BuiltInCategory.OST_DuctFitting));
                 catFilters.Add(new ElementCategoryFilter(BuiltInCategory.OST_DuctAccessory));
+            }
+            if (typeA == TeeElementType.CableTray || typeA == TeeElementType.Unknown)
+            {
+                catFilters.Add(new ElementCategoryFilter(BuiltInCategory.OST_CableTrayFitting));
             }
             if (catFilters.Count > 0)
             {

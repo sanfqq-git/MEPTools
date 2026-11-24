@@ -4,6 +4,7 @@ using System.Text;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Plumbing;
+using Autodesk.Revit.DB.Electrical;
 
 namespace MEPTools.MEP3TeeConnect
 {
@@ -216,6 +217,12 @@ namespace MEPTools.MEP3TeeConnect
             }
 
             // ---- 6. 弯头（等径，B 规格）----
+            // 诊断（只读，不改几何）：线槽垂直段可能被 Revit 旋转，记录实际截面便于排查
+            const double f2 = MEPTeeCalculator.FtToMm;
+            Connector rTopChk = FindConnectorAtPoint(riser, riserTop);
+            if (rTopChk != null && rTopChk.Shape == ConnectorProfileType.Rectangular)
+                _log.AppendLine($"  立管实际截面：{rTopChk.Width * f2:F0}x{rTopChk.Height * f2:F0}");
+
             Connector rBot = FindConnectorAtPoint(riser, riserBot);
             Connector bNear = FindConnectorAtPoint(doc.GetElement(p.IdB), crossPtB);
             if (rBot == null || bNear == null)
@@ -578,7 +585,66 @@ namespace MEPTools.MEP3TeeConnect
                 return PlumbingUtils.BreakCurve(doc, elemId, breakPt);
             if (t == TeeElementType.Duct)
                 return MechanicalUtils.BreakCurve(doc, elemId, breakPt);
+            // 线槽没有 BreakCurve，走"新建远段 + 缩回原段"的手动打断
+            if (t == TeeElementType.CableTray)
+                return SplitCableTray(doc, elemId, breakPt);
             return ElementId.InvalidElementId;
+        }
+
+        // =====================================================================
+        // ★ 线槽打断：Revit 没有 CableTray 的 BreakCurve，只能手工拆
+        //   原段缩回 [p0, cut]，另建一段 [cut, p1]（同类型/同标高/同宽高）
+        // =====================================================================
+        private ElementId SplitCableTray(Document doc, ElementId trayId, XYZ breakPt)
+        {
+            if (!(doc.GetElement(trayId) is CableTray tray))
+                return ElementId.InvalidElementId;
+            if (!(tray.Location is LocationCurve lc) || !(lc.Curve is Line line))
+                return ElementId.InvalidElementId;
+
+            XYZ p0 = line.GetEndPoint(0);
+            XYZ p1 = line.GetEndPoint(1);
+            XYZ dir = (p1 - p0);
+            double len = dir.GetLength();
+            if (len < 1e-6) return ElementId.InvalidElementId;
+            dir = dir / len;
+
+            // 交点投影到轴线，保证断开点严格落在线上
+            double t = (breakPt - p0).DotProduct(dir);
+            XYZ cut = p0 + dir * t;
+            if (t < 1e-6 || t > len - 1e-6) return ElementId.InvalidElementId;
+
+            double w = ReadDoubleParam(tray, BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM);
+            double h = ReadDoubleParam(tray, BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM);
+            ElementId typeId = tray.GetTypeId();
+
+            ElementId levelId = tray.LevelId;
+            if (levelId == ElementId.InvalidElementId)
+                levelId = tray.get_Parameter(BuiltInParameter.RBS_START_LEVEL_PARAM)?.AsElementId()
+                          ?? ElementId.InvalidElementId;
+
+            CableTray nt = CableTray.Create(doc, typeId, cut, p1, levelId);
+            if (nt == null) return ElementId.InvalidElementId;
+
+            if (w > 0) TrySetParam(nt, BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM, w);
+            if (h > 0) TrySetParam(nt, BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM, h);
+
+            // 原段缩回到断开点（保持 p0 → cut 的方向，不翻转朝向）
+            lc.Curve = Line.CreateBound(p0, cut);
+            doc.Regenerate();
+
+            return nt.Id;
+        }
+
+        private double ReadDoubleParam(Element e, BuiltInParameter bip)
+        {
+            try
+            {
+                var p = e.get_Parameter(bip);
+                if (p != null && p.StorageType == StorageType.Double) return p.AsDouble();
+            }
+            catch { }
+            return 0;
         }
 
         // =====================================================================
@@ -606,6 +672,16 @@ namespace MEPTools.MEP3TeeConnect
                         if (dia > 0) TrySetParam(nd, BuiltInParameter.RBS_CURVE_DIAMETER_PARAM, dia);
                         if (w > 0) TrySetParam(nd, BuiltInParameter.RBS_CURVE_WIDTH_PARAM, w);
                         if (h > 0) TrySetParam(nd, BuiltInParameter.RBS_CURVE_HEIGHT_PARAM, h);
+                    }
+                    break;
+
+                case TeeElementType.CableTray:
+                    // 线槽创建不传系统类型，宽高用线槽自己的参数
+                    el = CableTray.Create(doc, typeId, s, e, levelId);
+                    if (el != null)
+                    {
+                        if (w > 0) TrySetParam(el, BuiltInParameter.RBS_CABLETRAY_WIDTH_PARAM, w);
+                        if (h > 0) TrySetParam(el, BuiltInParameter.RBS_CABLETRAY_HEIGHT_PARAM, h);
                     }
                     break;
             }
