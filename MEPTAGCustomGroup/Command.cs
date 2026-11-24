@@ -165,7 +165,10 @@ namespace MEPTools.MEPGroupTag
                         }
                     }
 
-                    var rulesBefore = config.ExtraRules.Where(r => r.GroupIndex == groupIndex.ToString() || r.GroupIndex == "*").ToList();
+                    // 组前规则：单组时不插"第N组前"（含第1组前），仅保留"每一组前"通用规则；多组时行为不变。
+                    var rulesBefore = config.ExtraRules
+                        .Where(r => r.GroupIndex == "*" || (groups.Count > 1 && r.GroupIndex == groupIndex.ToString()))
+                        .ToList();
                     foreach (var rule in rulesBefore)
                     {
                         TryCreateTagForRule(rule, group.Elements, selectedData, allTagSymbols, ductTagSym, pipeTagSym, trayTagSym, doc, activeView, basePickPt.X, ref currentY, lineSpacingFt);
