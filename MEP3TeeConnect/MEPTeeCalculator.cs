@@ -45,7 +45,7 @@ namespace MEPTools.MEP3TeeConnect
         public double HeightA { get; set; }
         public double HeightB { get; set; }
 
-        /// <summary>立管/三通规格（取 A、B 中较大者，异径时即为大管径）</summary>
+        /// <summary>立管规格（恒取 B 规格）</summary>
         public double Diameter { get; set; }
         public double Width { get; set; }
         public double Height { get; set; }

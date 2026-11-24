@@ -192,27 +192,57 @@ namespace MEPTools.MEP3TeeConnect
                 // 5. 单事务执行
                 // ============================================================
                 int success = 0;
+                int failed = 0;
+                string lastErr = null;
+
                 using (Transaction trans = new Transaction(doc, "MEP T 形自动连接"))
                 {
+                    // 批量操作期间不弹模态错误框（否则一个个点它在批处理里无法继续）
+                    FailureHandlingOptions fho = trans.GetFailureHandlingOptions();
+                    fho.SetForcedModalHandling(false);
+                    fho.SetClearAfterRollback(true);
+                    trans.SetFailureHandlingOptions(fho);
+
                     trans.Start();
                     try
                     {
                         StringBuilder svcLog = new StringBuilder();
                         MEPTeeService service = new MEPTeeService(svcLog);
+
                         foreach (TeePair p in pairs)
                         {
                             log.AppendLine($"\n--- 处理系统 {p.SystemName} ---");
-                            service.ProcessPair(doc, p);
-                            success++;
+                            try
+                            {
+                                service.ProcessPair(doc, p);
+                                success++;
+                            }
+                            catch (Exception ex)
+                            {
+                                failed++;
+                                lastErr = ex.Message;
+                                log.AppendLine($"✗ 系统 {p.SystemName} 失败：{ex.Message}");
+                                log.AppendLine("  该系统的改动已回滚，继续处理下一对");
+                            }
                         }
+
                         if (svcLog.Length > 0) log.AppendLine(svcLog.ToString());
+
+                        if (success == 0)
+                        {
+                            trans.RollBack();
+                            log.EndSession("全部失败（已回滚）");
+                            InfoCenterTip.Show($"✗ 全部失败：{lastErr}");
+                            return Result.Failed;
+                        }
+
                         trans.Commit();
                     }
                     catch (Exception ex)
                     {
                         log.AppendLine($"✗ 执行失败：{ex.Message}");
                         log.LogException("ProcessPair", ex);
-                        log.AppendLine("⚠ 单事务模式，已回滚所有更改");
+                        log.AppendLine("⚠ 已回滚所有更改");
                         trans.RollBack();
                         log.EndSession("失败（已回滚）");
                         InfoCenterTip.Show($"✗ 执行失败：{ex.Message}");
@@ -220,8 +250,11 @@ namespace MEPTools.MEP3TeeConnect
                     }
                 }
 
-                log.EndSession($"成功 {success} 对");
-                InfoCenterTip.Show($"✓ MEP T 形自动连接完成，成功 {success} 对");
+                string doneMsg = failed > 0
+                    ? $"✓ 完成：成功 {success} 对，跳过 {failed} 对（原因见日志）"
+                    : $"✓ MEP T 形自动连接完成，成功 {success} 对";
+                log.EndSession($"成功 {success} 对" + (failed > 0 ? $"，失败 {failed} 对" : ""));
+                InfoCenterTip.Show(doneMsg);
                 return Result.Succeeded;
             }
             catch (Autodesk.Revit.Exceptions.OperationCanceledException)
@@ -341,8 +374,9 @@ namespace MEPTools.MEP3TeeConnect
             p.HeightA = MEPTeeCalculator.GetHeight(elemA, p.ElemType);
             p.HeightB = MEPTeeCalculator.GetHeight(elemB, p.ElemType);
 
-            // ★ 修改点：为了让立管端看起来是“小管”，立管尺寸必须与支管 B 保持一致。
-            // 这样 Revit 调用 NewTeeFitting 时，会生成一个主管大、立管小的标准异径三通。
+            // ★ 立管尺寸恒取支管 B。
+            // 异径时由 MEPTeeService 在“三通与立管之间”插入大小头：
+            //   三通(A 等径) → A 规格短立管 → 大小头 → 立管(B) → 等径弯头
             p.Diameter = p.DiameterB;
             p.Width = p.WidthB;
             p.Height = p.HeightB;
