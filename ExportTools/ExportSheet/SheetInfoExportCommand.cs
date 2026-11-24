@@ -76,27 +76,33 @@ namespace MEPTools.ExportTools.ExportSheet
                     folder = form.OutputFolder;
                 }
 
-                SimpleTable table = new SimpleTable(ColumnKey, ColumnNumber, ColumnName);
-                table.AddColumn(ColumnOriginalNumber, true);
-                table.AddColumn(ColumnOriginalName, true);
-                table.AddColumn(ColumnBatch, true);
-                table.AddColumn(ColumnDocFp, true);
-                table.SheetName = SheetNameForExport;
-
                 // 一次导出 = 一个批次；文档指纹标识「这份表是从哪个模型导出的」
                 string batch = Guid.NewGuid().ToString("N");
                 string docFingerprint = SheetInfoSafety.GetDocumentFingerprint(doc);
                 if (string.IsNullOrEmpty(docFingerprint)) docFingerprint = "未知";
 
+                // 先把图纸快照下来（编号/名称/全部可写文本参数），再统一组表：
+                // 参数列跟着模型上真实存在的参数走，换项目不用改代码。
+                List<SheetInfoParams.SheetSnapshot> snapshots = new List<SheetInfoParams.SheetSnapshot>();
                 foreach (string key in keys)
                 {
                     int idValue;
                     if (!int.TryParse(key, out idValue)) continue;
                     ViewSheet sheet = doc.GetElement(new ElementId(idValue)) as ViewSheet;
                     if (sheet == null) continue;
-                    table.AddRow(key, sheet.SheetNumber, sheet.Name,
-                        sheet.SheetNumber, sheet.Name, batch, docFingerprint);
+
+                    SheetInfoParams.SheetSnapshot snapshot = SheetInfoParams.Capture(sheet);
+                    if (snapshot != null) snapshots.Add(snapshot);
                 }
+
+                if (snapshots.Count == 0)
+                {
+                    TaskDialog.Show("导出图纸信息", "没有取到任何图纸。");
+                    return Result.Cancelled;
+                }
+
+                List<string> paramColumns = SheetInfoParams.ResolveColumnNames(snapshots.Select(s => s.Values));
+                SimpleTable table = SheetInfoParams.BuildTable(paramColumns, snapshots, batch, docFingerprint);
 
                 if (table.Rows.Count == 0)
                 {
@@ -108,12 +114,13 @@ namespace MEPTools.ExportTools.ExportSheet
                 string path = ExportFileUtils.GetUniquePath(folder, fileName);
                 XlsxTableStore.Save(path, table);
 
-                MEPLogger.Instance.AppendLine("[导出] 批次=" + batch + " 指纹=" + docFingerprint + " 行数=" + table.Rows.Count);
-                MEPLogger.Instance.EndSession("Done: Sheets=" + table.Rows.Count);
+                MEPLogger.Instance.AppendLine("[导出] 批次=" + batch + " 指纹=" + docFingerprint +
+                                              " 行数=" + table.Rows.Count + " 参数列=" + paramColumns.Count);
+                MEPLogger.Instance.EndSession("Done: Sheets=" + table.Rows.Count + " ParamColumns=" + paramColumns.Count);
                 TaskDialog.Show("导出图纸信息",
-                    "已导出 " + table.Rows.Count + " 张图纸。\n\n📁 " + path + "\n\n" +
-                    "只有「图纸名称」列会被直接写回；「图纸编号」要在导入时勾选才生效。\n" +
-                    "右侧 4 个隐藏列（原始编号 / 原始名称 / 来源批次 / 来源文档）是导入校验用的基线，请勿修改——\n" +
+                    "已导出 " + table.Rows.Count + " 张图纸，含 " + paramColumns.Count + " 个参数列。\n\n📁 " + path + "\n\n" +
+                    "可改的列：图纸名称、图纸编号（导入时需勾选解锁），以及各文本参数列。\n" +
+                    "隐藏列（原始编号 / 原始名称 / 原始_各参数 / 来源批次 / 来源文档）是导入校验用的基线，请勿修改——\n" +
                     "改了会导致导入整份拒绝，届时重新导出即可。");
                 return Result.Succeeded;
             }

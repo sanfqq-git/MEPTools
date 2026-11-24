@@ -60,19 +60,22 @@ namespace MEPTools.ExportTools.ExportSheet
                 List<ExportListItem> items = new List<ExportListItem>();
                 foreach (ViewSheet sheet in sheets)
                 {
-                    string key = sheet.Id.IntegerValue.ToString();
-                    state.Rows[key] = new SheetRecord
-                    {
-                        Key = key,
-                        Number = sheet.SheetNumber,
-                        Name = sheet.Name
-                    };
+                    // 编号 / 名称 / 全部可写文本参数一起快照：窗口里只写文件，不碰模型
+                    SheetInfoParams.SheetSnapshot snapshot = SheetInfoParams.Capture(sheet);
+                    if (snapshot == null) continue;
+
+                    state.Rows[snapshot.Key] = snapshot;
                     items.Add(new ExportListItem
                     {
-                        Key = key,
-                        Name = "[" + sheet.SheetNumber + "]  " + sheet.Name
+                        Key = snapshot.Key,
+                        Name = "[" + snapshot.Number + "]  " + snapshot.Name
                     });
                 }
+
+                state.ParamNames = SheetInfoParams.ResolveColumnNames(state.Rows.Values.Select(s => s.Values));
+                MEPLogger.Instance.AppendLine("[同步] 参数列=" + state.ParamNames.Count +
+                                              (state.ParamNames.Count > 0 ? "：" + string.Join("、", state.ParamNames.Take(10)) +
+                                                (state.ParamNames.Count > 10 ? " …" : string.Empty) : string.Empty));
 
                 SheetInfoSyncAction action = SheetInfoSyncAction.None;
                 string importFile = null;
@@ -120,17 +123,12 @@ namespace MEPTools.ExportTools.ExportSheet
             }
         }
 
-        private class SheetRecord
-        {
-            public string Key { get; set; }
-            public string Number { get; set; }
-            public string Name { get; set; }
-        }
-
         /// <summary>窗口用的数据 + 导出实现：只写文件，不碰 Revit API。</summary>
         private class SyncState
         {
-            public Dictionary<string, SheetRecord> Rows = new Dictionary<string, SheetRecord>();
+            public Dictionary<string, SheetInfoParams.SheetSnapshot> Rows =
+                new Dictionary<string, SheetInfoParams.SheetSnapshot>();
+            public List<string> ParamNames = new List<string>();
             public string Batch;
             public string DocFingerprint;
             public string LastPath;
@@ -141,28 +139,22 @@ namespace MEPTools.ExportTools.ExportSheet
                 SheetInfoSyncExportResult result = new SheetInfoSyncExportResult();
                 try
                 {
-                    SimpleTable table = new SimpleTable(SheetInfoExportCommand.ColumnKey,
-                        SheetInfoExportCommand.ColumnNumber, SheetInfoExportCommand.ColumnName);
-                    table.AddColumn(SheetInfoExportCommand.ColumnOriginalNumber, true);
-                    table.AddColumn(SheetInfoExportCommand.ColumnOriginalName, true);
-                    table.AddColumn(SheetInfoExportCommand.ColumnBatch, true);
-                    table.AddColumn(SheetInfoExportCommand.ColumnDocFp, true);
-                    table.SheetName = SheetInfoExportCommand.SheetNameForExport;
-
+                    List<SheetInfoParams.SheetSnapshot> snapshots = new List<SheetInfoParams.SheetSnapshot>();
                     foreach (string key in keys)
                     {
-                        SheetRecord record;
-                        if (!Rows.TryGetValue(key, out record)) continue;
-                        table.AddRow(key, record.Number, record.Name,
-                            record.Number, record.Name, Batch, DocFingerprint);
+                        SheetInfoParams.SheetSnapshot snapshot;
+                        if (!Rows.TryGetValue(key, out snapshot)) continue;
+                        snapshots.Add(snapshot);
                     }
 
-                    if (table.Rows.Count == 0)
+                    if (snapshots.Count == 0)
                     {
                         result.Success = false;
                         result.Error = "没有取到任何图纸";
                         return result;
                     }
+
+                    SimpleTable table = SheetInfoParams.BuildTable(ParamNames, snapshots, Batch, DocFingerprint);
 
                     string fileName = "图纸信息_" + DateTime.Now.ToString("yyyyMMdd_HHmm") + ".xlsx";
                     string path = ExportFileUtils.GetUniquePath(folder, fileName);
@@ -171,7 +163,8 @@ namespace MEPTools.ExportTools.ExportSheet
                     LastPath = path;
                     LastCount = table.Rows.Count;
 
-                    MEPLogger.Instance.AppendLine("[同步导出] 行数=" + table.Rows.Count + " 文件=" + path);
+                    MEPLogger.Instance.AppendLine("[同步导出] 行数=" + table.Rows.Count +
+                                                  " 参数列=" + ParamNames.Count + " 文件=" + path);
 
                     result.Success = true;
                     result.Path = path;

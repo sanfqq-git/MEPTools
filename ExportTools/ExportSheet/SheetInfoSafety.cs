@@ -24,6 +24,7 @@ namespace MEPTools.ExportTools.ExportSheet
         public const string SnapshotColumnNewName = "新名称";
         public const string SnapshotColumnSource = "来源";
         public const string SnapshotColumnTime = "时间";
+        public const string SnapshotColumnParams = "参数";
 
         public const string SnapshotFilePrefix = "图纸信息回滚快照_";
         public const string LegacyLogFilePrefix = "图纸信息导入_变更日志_";
@@ -59,6 +60,9 @@ namespace MEPTools.ExportTools.ExportSheet
             public string OldName { get; set; }
             public string NewNumber { get; set; }
             public string NewName { get; set; }
+
+            /// <summary>文本参数改动（SheetInfoParams.EncodeParamChanges 的编码串）；空表示这一行只改了名称/编号。</summary>
+            public string Params { get; set; }
         }
 
         /// <summary>
@@ -77,7 +81,7 @@ namespace MEPTools.ExportTools.ExportSheet
                 SimpleTable table = new SimpleTable(
                     SnapshotColumnKey, SnapshotColumnOldNumber, SnapshotColumnOldName,
                     SnapshotColumnNewNumber, SnapshotColumnNewName,
-                    SnapshotColumnSource, SnapshotColumnTime);
+                    SnapshotColumnSource, SnapshotColumnTime, SnapshotColumnParams);
 
                 string time = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
                 foreach (SnapshotRow row in rows)
@@ -89,7 +93,8 @@ namespace MEPTools.ExportTools.ExportSheet
                         row.NewNumber ?? string.Empty,
                         row.NewName ?? string.Empty,
                         source ?? string.Empty,
-                        time);
+                        time,
+                        row.Params ?? string.Empty);
                 }
 
                 string fileName = SnapshotFilePrefix + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".csv";
@@ -113,6 +118,7 @@ namespace MEPTools.ExportTools.ExportSheet
             int oldNameIndex = table.ColumnIndex(SnapshotColumnOldName);
             int newNumberIndex = table.ColumnIndex(SnapshotColumnNewNumber);
             int newNameIndex = table.ColumnIndex(SnapshotColumnNewName);
+            int paramsIndex = table.ColumnIndex(SnapshotColumnParams);   // 老快照没有这一列 → -1，按“无参数改动”处理
 
             if (keyIndex < 0 || oldNameIndex < 0 || newNameIndex < 0)
                 throw new InvalidDataException("不是有效的回滚快照：缺少「" + SnapshotColumnKey + "」「" +
@@ -130,7 +136,8 @@ namespace MEPTools.ExportTools.ExportSheet
                     OldNumber = oldNumberIndex >= 0 ? table.Cell(i, oldNumberIndex) : string.Empty,
                     OldName = table.Cell(i, oldNameIndex),
                     NewNumber = newNumberIndex >= 0 ? table.Cell(i, newNumberIndex) : string.Empty,
-                    NewName = table.Cell(i, newNameIndex)
+                    NewName = table.Cell(i, newNameIndex),
+                    Params = paramsIndex >= 0 ? table.Cell(i, paramsIndex) : string.Empty
                 });
             }
             return rows;

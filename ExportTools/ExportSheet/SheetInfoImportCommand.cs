@@ -109,6 +109,22 @@ namespace MEPTools.ExportTools.ExportSheet
                 bool hasBaseline = origNumberIndex >= 0 && origNameIndex >= 0;
                 bool hasSource = batchIndex >= 0 && docFpIndex >= 0;
 
+                // ---------- 参数列（可写文本参数，叠加在固定三列右边） ----------
+                // 只看“可见列”：隐藏列全是基线（原始编号 / 原始名称 / 原始_参数名 / 来源…）。
+                List<ParamColumn> paramColumns = new List<ParamColumn>();
+                for (int c = 0; c < table.ColumnCount; c++)
+                {
+                    string header = table.Headers[c];
+                    if (table.IsColumnHidden(c)) continue;
+                    if (SheetInfoParams.IsReserved(header)) continue;
+                    paramColumns.Add(new ParamColumn
+                    {
+                        Name = header,
+                        ValueIndex = c,
+                        BaselineIndex = table.ColumnIndex(SheetInfoParams.OrigPrefix + header)
+                    });
+                }
+
                 // ---------- 第 2/3/4 步：整份校验（任何一行不过 → 整份拒绝） ----------
                 List<ImportRow> rows = ReadRows(table, doc, keyIndex, nameIndex, numberIndex,
                     origNumberIndex, origNameIndex, batchIndex, docFpIndex, hasBaseline);
@@ -143,30 +159,73 @@ namespace MEPTools.ExportTools.ExportSheet
                     if (!ConfirmLegacyTable(hasBaseline, hasSource)) return Result.Cancelled;
                 }
 
-                // ---------- 第 5 步：粗扫数量（弹窗确认用） ----------
+                // ---------- 第 5 步：逐行差异预扫（弹窗确认用；只算不写） ----------
+                // 名称/编号：沿用老规则（名称可写、编号需勾选解锁）。
+                // 参数列：只有「导出时的原值 == 模型现值」才允许覆盖，否则说明模型被别人改过 → 跳过并报出来。
                 int roughNameChanges = 0;
                 int roughNumberChanges = 0;
+                int roughParamChanges = 0;
+
                 foreach (ImportRow row in rows)
                 {
                     if (!row.HasSheet) continue;
-                    if (!string.IsNullOrWhiteSpace(row.NewName) &&
-                        !string.Equals(row.NewName, row.Sheet.Name, StringComparison.Ordinal))
-                        roughNameChanges++;
+                    ViewSheet sheet = row.Sheet;
 
-                    if (row.NewNumber.Length > 0 &&
-                        !string.Equals(row.NewNumber, row.Sheet.SheetNumber, StringComparison.Ordinal))
-                        roughNumberChanges++;
+                    row.NameChanged = !string.IsNullOrWhiteSpace(row.NewName) &&
+                                      !string.Equals(row.NewName, sheet.Name, StringComparison.Ordinal);
+                    row.NumberChanged = row.NewNumber.Length > 0 &&
+                                        !string.Equals(row.NewNumber, sheet.SheetNumber, StringComparison.Ordinal);
+
+                    if (row.NameChanged) roughNameChanges++;
+                    if (row.NumberChanged) roughNumberChanges++;
+
+                    foreach (ParamColumn column in paramColumns)
+                    {
+                        string want = SheetInfoParams.Normalize(table.Cell(row.TableRowIndex, column.ValueIndex));
+                        string now = SheetInfoParams.GetValue(sheet, column.Name);
+
+                        if (now == null)
+                        {
+                            row.ParamNotes.Add("第 " + row.RowIndex + " 行：图纸上没有参数「" + column.Name + "」，跳过该参数");
+                            continue;
+                        }
+                        if (string.Equals(want, now, StringComparison.Ordinal)) continue;   // 没变化
+
+                        if (column.BaselineIndex < 0)
+                        {
+                            row.ParamNotes.Add("第 " + row.RowIndex + " 行：参数「" + column.Name +
+                                               "」没有基线列（老表 / 手工表），跳过该参数");
+                            continue;
+                        }
+
+                        string baseline = SheetInfoParams.Normalize(table.Cell(row.TableRowIndex, column.BaselineIndex));
+                        if (!string.Equals(baseline, now, StringComparison.Ordinal))
+                        {
+                            row.ParamNotes.Add("第 " + row.RowIndex + " 行：参数「" + column.Name +
+                                               "」模型现值「" + Shorten(now) + "」与导出时「" + Shorten(baseline) +
+                                               "」不同（可能被别人改过），跳过该参数");
+                            continue;
+                        }
+
+                        row.ParamChanges.Add(new SheetInfoParams.ParamChange
+                        {
+                            Name = column.Name,
+                            OldValue = now,
+                            NewValue = want
+                        });
+                        roughParamChanges++;
+                    }
                 }
 
-                if (roughNameChanges == 0 && roughNumberChanges == 0)
+                if (roughNameChanges == 0 && roughNumberChanges == 0 && roughParamChanges == 0)
                 {
-                    TaskDialog.Show("导入图纸信息", "表格里的名称/编号与模型完全一致，没有需要改动的行。");
+                    TaskDialog.Show("导入图纸信息", "表格里的名称/编号/参数与模型完全一致，没有需要改动的行。");
                     return Result.Cancelled;
                 }
 
                 // ---------- 危险列：图纸编号 ----------
                 bool allowNumber = ConfirmAndAskDangerousColumn(roughNameChanges, roughNumberChanges,
-                    SheetInfoExportCommand.ColumnNumber);
+                    roughParamChanges, SheetInfoExportCommand.ColumnNumber);
 
                 // ---------- 逐行差异计算 ----------
                 List<SheetChange> changes = new List<SheetChange>();
@@ -177,29 +236,31 @@ namespace MEPTools.ExportTools.ExportSheet
                 {
                     if (!row.HasSheet) continue; // 保险：前面已整份拒绝
 
+                    foreach (string note in row.ParamNotes) errors.Add(note);
+
                     ViewSheet sheet = row.Sheet;
                     string targetNumber = row.NewNumber.Length == 0 ? sheet.SheetNumber : row.NewNumber;
-                    bool nameChanged = !string.Equals(row.NewName, sheet.Name, StringComparison.Ordinal);
-                    bool numberChanged = !string.Equals(targetNumber, sheet.SheetNumber, StringComparison.Ordinal);
 
-                    if (numberChanged && !allowNumber)
+                    if (row.NumberChanged && !allowNumber)
                     {
-                        errors.Add("第 " + row.RowIndex + " 行：改动了图纸编号「" + sheet.SheetNumber + "→" + targetNumber + "」，本次未勾选允许修改编号，已跳过");
+                        errors.Add("第 " + row.RowIndex + " 行：改动了图纸编号「" + sheet.SheetNumber + "→" + targetNumber +
+                                   "」，本次未勾选允许修改编号，已跳过整行");
                         continue;
                     }
 
-                    if (!nameChanged && !numberChanged) continue; // 没有变化
+                    if (!row.NameChanged && !row.NumberChanged && row.ParamChanges.Count == 0) continue; // 没有变化
 
                     changes.Add(new SheetChange
                     {
                         Sheet = sheet,
                         NewName = row.NewName,
                         NewNumber = targetNumber,
-                        NameChanged = nameChanged,
-                        NumberChanged = numberChanged,
+                        NameChanged = row.NameChanged,
+                        NumberChanged = row.NumberChanged,
                         RowIndex = row.RowIndex,
                         NameBefore = sheet.Name,
-                        NumberBefore = sheet.SheetNumber
+                        NumberBefore = sheet.SheetNumber,
+                        ParamChanges = row.ParamChanges
                     });
                     touched.Add(sheet.Id);
                 }
@@ -282,7 +343,8 @@ namespace MEPTools.ExportTools.ExportSheet
                         OldNumber = change.NumberBefore,
                         OldName = change.NameBefore,
                         NewNumber = change.NumberChanged ? change.NewNumber : change.NumberBefore,
-                        NewName = change.NameChanged ? change.NewName : change.NameBefore
+                        NewName = change.NameChanged ? change.NewName : change.NameBefore,
+                        Params = SheetInfoParams.EncodeParamChanges(change.ParamChanges)
                     });
                 }
 
@@ -299,7 +361,7 @@ namespace MEPTools.ExportTools.ExportSheet
                 // ---------- 第 9 步：单事务写回 + 变更日志 ----------
                 ImportChangeLog log = new ImportChangeLog(folder, "图纸信息导入");
 
-                int renamed = 0, renumbered = 0;
+                int renamed = 0, renumbered = 0, paramsWritten = 0;
                 using (Transaction transaction = new Transaction(doc, "批量更新图纸信息"))
                 {
                     transaction.Start();
@@ -336,6 +398,23 @@ namespace MEPTools.ExportTools.ExportSheet
                                 log.Log("[编号] 主键=" + change.Sheet.Id.IntegerValue + " 旧=" + oldNumber + " 新=" + change.NewNumber + " 失败：" + ex.Message);
                             }
                         }
+
+                        // 文本参数：逐条容错，写不进的单独报出来（不影响其它参数）
+                        foreach (SheetInfoParams.ParamChange param in change.ParamChanges)
+                        {
+                            string error = SheetInfoParams.SetValue(change.Sheet, param.Name, param.NewValue);
+                            if (error == null)
+                            {
+                                paramsWritten++;
+                                log.Log("[参数] 主键=" + change.Sheet.Id.IntegerValue + " 名=" + param.Name +
+                                        " 旧=" + param.OldValue + " 新=" + param.NewValue + " OK");
+                            }
+                            else
+                            {
+                                errors.Add("第 " + change.RowIndex + " 行：" + error);
+                                log.Log("[参数] 主键=" + change.Sheet.Id.IntegerValue + " 名=" + param.Name + " 失败：" + error);
+                            }
+                        }
                     }
                     transaction.Commit();
                 }
@@ -344,12 +423,14 @@ namespace MEPTools.ExportTools.ExportSheet
 
                 bool logSaved = log.SaveIfAny();
                 MEPLogger.Instance.EndSession("Done: Renamed=" + renamed + " Renumbered=" + renumbered +
+                                              " Params=" + paramsWritten +
                                               " AllowNumber=" + allowNumber + " Snapshot=" + snapshotPath);
 
                 TaskDialog dialog = new TaskDialog("导入图纸信息");
                 dialog.MainInstruction = "导入完成";
                 dialog.MainContent =
                     "名称改名 " + renamed + " 张" + (allowNumber ? "，编号修改 " + renumbered + " 张" : "，编号未改动") +
+                    (paramsWritten > 0 ? "，参数写入 " + paramsWritten + " 处" : "") +
                     (errors.Count > 0 ? "\n跳过/失败 " + errors.Count + " 条" : "") +
                     (logSaved ? "\n\n变更日志：" + log.Path : string.Empty) +
                     "\n\n回滚快照：" + snapshotPath +
@@ -389,6 +470,7 @@ namespace MEPTools.ExportTools.ExportSheet
                 ImportRow row = new ImportRow
                 {
                     RowIndex = i + 2,
+                    TableRowIndex = i,
                     NewName = newName,
                     NewNumber = newNumber,
                     BaselineNumber = baseNumber,
@@ -509,14 +591,16 @@ namespace MEPTools.ExportTools.ExportSheet
         }
 
         /// <summary>二次确认弹窗：主按钮决定是否继续导入，勾选框决定是否解锁危险列。</summary>
-        private static bool ConfirmAndAskDangerousColumn(int nameCount, int numberCount, string dangerousColumnName)
+        private static bool ConfirmAndAskDangerousColumn(int nameCount, int numberCount, int paramCount, string dangerousColumnName)
         {
             TaskDialog dialog = new TaskDialog("导入图纸信息");
             dialog.MainInstruction = "确认批量更新图纸信息？";
             dialog.MainContent =
-                "名称将修改 " + nameCount + " 张；编号在表格里有 " + numberCount + " 处与模型不同。\n\n" +
-                "默认只写回「图纸名称」——编号的差异会被跳过。\n" +
+                "名称将修改 " + nameCount + " 张；编号在表格里有 " + numberCount + " 处与模型不同；" +
+                "文本参数有 " + paramCount + " 处会被写入。\n\n" +
+                "默认只写回「图纸名称」和文本参数——编号的差异会被跳过。\n" +
                 "勾选下方选项才会同时写入「" + dangerousColumnName + "」。\n\n" +
+                "参数写入规则：只有「导出时的原值 == 模型现值」才允许覆盖；模型在导出后被别人改过的参数一律跳过并报出来。\n\n" +
                 "风险提示：Revit 内部数据结构不会因此损坏（编号只是一个字符串标识，ElementId 与图纸参照关系不变），" +
                 "但已出版的 PDF / 施工图目录 / 外部台账按旧编号命名，可能会出现对不上的情况。";
             dialog.VerificationText = "允许修改「" + dangerousColumnName + "」（危险，默认关闭）";
@@ -530,36 +614,56 @@ namespace MEPTools.ExportTools.ExportSheet
         /// <summary>差异清单：逐行「旧→新」，含将被跳过的行，人确认后才写。</summary>
         private static bool ConfirmDiff(List<SheetChange> valid, List<string> errors, string filePath)
         {
-            int nameCount = 0, numberCount = 0, shown = 0;
+            int nameCount = 0, numberCount = 0, paramCount = 0, shownRows = 0;
             StringBuilder sb = new StringBuilder();
 
             foreach (SheetChange change in valid)
             {
                 if (change.NameChanged) nameCount++;
                 if (change.NumberChanged) numberCount++;
+                paramCount += change.ParamChanges.Count;
 
                 StringBuilder line = new StringBuilder();
                 line.Append("第 ").Append(change.RowIndex).Append(" 行  主键 ").Append(change.Sheet.Id.IntegerValue);
                 if (change.NumberChanged) line.Append("  |  编号 ").Append(change.NumberBefore).Append(" → ").Append(change.NewNumber);
                 if (change.NameChanged) line.Append("  |  名称 ").Append(change.NameBefore).Append(" → ").Append(change.NewName);
+                if (change.ParamChanges.Count > 0) line.Append("  |  参数 ").Append(change.ParamChanges.Count).Append(" 处");
 
                 MEPLogger.Instance.AppendLine("[差异] " + line);
+                foreach (SheetInfoParams.ParamChange param in change.ParamChanges)
+                {
+                    MEPLogger.Instance.AppendLine("[差异]     参数 " + param.Name + "：" +
+                                                  Shorten(param.OldValue) + " → " + Shorten(param.NewValue));
+                }
 
-                if (shown < MaxDiffRows)
+                if (shownRows < MaxDiffRows)
                 {
                     sb.AppendLine(line.ToString());
-                    shown++;
+                    int shownParams = 0;
+                    foreach (SheetInfoParams.ParamChange param in change.ParamChanges)
+                    {
+                        if (shownParams >= 3)
+                        {
+                            sb.AppendLine("        … 其余 " + (change.ParamChanges.Count - 3) + " 处参数见日志");
+                            break;
+                        }
+                        sb.AppendLine("        └ " + param.Name + "：" +
+                                      Shorten(param.OldValue) + " → " + Shorten(param.NewValue));
+                        shownParams++;
+                    }
+                    shownRows++;
                 }
             }
-            if (valid.Count > shown) sb.AppendLine("… 其余 " + (valid.Count - shown) + " 行已写入日志");
+            if (valid.Count > shownRows) sb.AppendLine("… 其余 " + (valid.Count - shownRows) + " 行已写入日志");
 
-            MEPLogger.Instance.AppendLine("[差异] 合计待写入 " + valid.Count + " 行：名称 " + nameCount + " 张，编号 " + numberCount + " 张");
+            MEPLogger.Instance.AppendLine("[差异] 合计待写入 " + valid.Count + " 行：名称 " + nameCount + " 张，编号 " +
+                                          numberCount + " 张，参数 " + paramCount + " 处");
 
             if (errors.Count > 0)
             {
                 foreach (string error in errors) MEPLogger.Instance.AppendLine("[跳过] " + error);
                 sb.AppendLine();
-                sb.AppendLine("另有 " + errors.Count + " 行会被跳过：");
+                sb.AppendLine("另有 " + errors.Count + " 条会被跳过：");
                 sb.AppendLine(Preview(errors, 10));
             }
 
@@ -570,7 +674,8 @@ namespace MEPTools.ExportTools.ExportSheet
             }
 
             TaskDialog dialog = new TaskDialog("导入图纸信息");
-            dialog.MainInstruction = "确认写入 " + valid.Count + " 张图纸？（名称 " + nameCount + " 张 / 编号 " + numberCount + " 张）";
+            dialog.MainInstruction = "确认写入 " + valid.Count + " 张图纸？（名称 " + nameCount + " 张 / 编号 " +
+                                     numberCount + " 张 / 参数 " + paramCount + " 处）";
             dialog.MainContent = sb.ToString();
             dialog.CommonButtons = TaskDialogCommonButtons.Yes | TaskDialogCommonButtons.No;
             dialog.DefaultButton = TaskDialogResult.No;
@@ -637,7 +742,8 @@ namespace MEPTools.ExportTools.ExportSheet
 
         private class ImportRow
         {
-            public int RowIndex { get; set; }
+            public int RowIndex { get; set; }        // Excel 里的行号（含表头偏移），报错用
+            public int TableRowIndex { get; set; }   // SimpleTable 的 0 基行号，取单元格用
             public ViewSheet Sheet { get; set; }
             public bool HasSheet { get { return Sheet != null; } }
             public string NewName { get; set; }
@@ -646,9 +752,27 @@ namespace MEPTools.ExportTools.ExportSheet
             public string BaselineName { get; set; }
             public string Batch { get; set; }
             public string DocFp { get; set; }
+
+            // 预扫阶段算出来的差异（后面只读，不再重算）
+            public bool NameChanged { get; set; }
+            public bool NumberChanged { get; set; }
+            public List<SheetInfoParams.ParamChange> ParamChanges { get; private set; }
+            public List<string> ParamNotes { get; private set; }
             public List<string> Reasons { get; private set; }
 
-            public ImportRow() { Reasons = new List<string>(); }
+            public ImportRow()
+            {
+                ParamChanges = new List<SheetInfoParams.ParamChange>();
+                ParamNotes = new List<string>();
+                Reasons = new List<string>();
+            }
+        }
+
+        private class ParamColumn
+        {
+            public string Name { get; set; }
+            public int ValueIndex { get; set; }
+            public int BaselineIndex { get; set; }
         }
 
         private class SheetChange
@@ -661,6 +785,19 @@ namespace MEPTools.ExportTools.ExportSheet
             public int RowIndex { get; set; }
             public string NameBefore { get; set; }
             public string NumberBefore { get; set; }
+            public List<SheetInfoParams.ParamChange> ParamChanges { get; set; }
+
+            public SheetChange()
+            {
+                ParamChanges = new List<SheetInfoParams.ParamChange>();
+            }
+        }
+
+        /// <summary>弹窗里用的短文本（太长会把对话框撑爆）。</summary>
+        private static string Shorten(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return "（空）";
+            return value.Length <= 24 ? value : value.Substring(0, 24) + "…";
         }
     }
 }

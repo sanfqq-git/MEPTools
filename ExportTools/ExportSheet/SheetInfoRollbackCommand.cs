@@ -131,7 +131,38 @@ namespace MEPTools.ExportTools.ExportSheet
                                   "」也不是导入前「" + row.OldNumber + "」，可能之后被改过 → 跳过编号");
                     }
 
-                    if (item.NameAction || item.NumberAction) todo.Add(item);
+                    // 文本参数（只有新版快照/新版日志才有；老凭据这一列为空 → 不动参数）
+                    List<SheetInfoParams.ParamChange> stored = SheetInfoParams.DecodeParamChanges(row.Params);
+                    foreach (SheetInfoParams.ParamChange param in stored)
+                    {
+                        string curParam = SheetInfoParams.GetValue(sheet, param.Name);
+                        if (curParam == null)
+                        {
+                            notes.Add("第 " + rowNo + " 行：参数「" + param.Name + "」在模型里已不存在（可能被删列/改名）→ 跳过");
+                            continue;
+                        }
+                        if (string.Equals(curParam, param.OldValue, StringComparison.Ordinal))
+                        {
+                            // 已经是导入前的值，无需处理
+                        }
+                        else if (string.Equals(curParam, param.NewValue, StringComparison.Ordinal))
+                        {
+                            item.Params.Add(new SheetInfoParams.ParamChange
+                            {
+                                Name = param.Name,
+                                OldValue = curParam,        // 现值（导入后）
+                                NewValue = param.OldValue   // 目标值（导入前）
+                            });
+                        }
+                        else
+                        {
+                            notes.Add("第 " + rowNo + " 行：参数「" + param.Name + "」现在是「" + SheetInfoSafety.Shorten(curParam, 20) +
+                                      "」，既不是导入后「" + SheetInfoSafety.Shorten(param.NewValue, 20) +
+                                      "」也不是导入前「" + SheetInfoSafety.Shorten(param.OldValue, 20) + "」→ 跳过");
+                        }
+                    }
+
+                    if (item.NameAction || item.NumberAction || item.Params.Count > 0) todo.Add(item);
                 }
 
                 if (todo.Count == 0)
@@ -170,7 +201,7 @@ namespace MEPTools.ExportTools.ExportSheet
                         // 名称不阻断：本模型本来就可能存在同名图纸，先按行尝试，失败会逐条报出来
                         item.NameOccupiedHint = true;
                     }
-                    if (item.NameAction || item.NumberAction) finalTodo.Add(item);
+                    if (item.NameAction || item.NumberAction || item.Params.Count > 0) finalTodo.Add(item);
                 }
 
                 if (finalTodo.Count == 0)
@@ -196,7 +227,8 @@ namespace MEPTools.ExportTools.ExportSheet
                         OldNumber = item.Sheet.SheetNumber,
                         OldName = item.Sheet.Name,
                         NewNumber = item.NumberAction ? item.NumberTo : item.Sheet.SheetNumber,
-                        NewName = item.NameAction ? item.NameTo : item.Sheet.Name
+                        NewName = item.NameAction ? item.NameTo : item.Sheet.Name,
+                        Params = SheetInfoParams.EncodeParamChanges(item.Params)
                     });
                 }
 
@@ -211,7 +243,7 @@ namespace MEPTools.ExportTools.ExportSheet
                 // ---------- 执行回退 ----------
                 ImportChangeLog log = new ImportChangeLog(folder, "图纸信息撤销");
 
-                int renamed = 0, renumbered = 0;
+                int renamed = 0, renumbered = 0, paramsRestored = 0;
                 using (Transaction transaction = new Transaction(doc, "撤销图纸信息导入"))
                 {
                     transaction.Start();
@@ -250,18 +282,35 @@ namespace MEPTools.ExportTools.ExportSheet
                                 log.Log("[编号回退] 主键=" + item.Sheet.Id.IntegerValue + " 失败：" + ex.Message);
                             }
                         }
+
+                        foreach (SheetInfoParams.ParamChange param in item.Params)
+                        {
+                            string error = SheetInfoParams.SetValue(item.Sheet, param.Name, param.NewValue);
+                            if (error == null)
+                            {
+                                paramsRestored++;
+                                log.Log("[参数回退] 主键=" + item.Sheet.Id.IntegerValue + " 名=" + param.Name +
+                                        " 旧(导入后)=" + param.OldValue + " 新(导入前)=" + param.NewValue + " OK");
+                            }
+                            else
+                            {
+                                notes.Add("第 " + item.RowIndex + " 行：" + error);
+                                log.Log("[参数回退] 主键=" + item.Sheet.Id.IntegerValue + " 名=" + param.Name + " 失败：" + error);
+                            }
+                        }
                     }
                     transaction.Commit();
                 }
 
                 bool logSaved = log.SaveIfAny();
                 MEPLogger.Instance.EndSession("Done: RollbackName=" + renamed + " RollbackNumber=" + renumbered +
-                                              " ReverseSnapshot=" + reversePath);
+                                              " RollbackParams=" + paramsRestored + " ReverseSnapshot=" + reversePath);
 
                 TaskDialog result = new TaskDialog("撤销图纸导入");
                 result.MainInstruction = "撤销完成";
                 result.MainContent =
                     "名称回退 " + renamed + " 张，编号回退 " + renumbered + " 张" +
+                    (paramsRestored > 0 ? "，参数恢复 " + paramsRestored + " 处" : string.Empty) +
                     (notes.Count > 0 ? "\n\n跳过/失败 " + notes.Count + " 条：\n" + SheetInfoSafety.FormatLines(notes, MaxPreviewRows) : string.Empty) +
                     (logSaved ? "\n\n变更日志：" + log.Path : string.Empty) +
                     "\n\n撤销前快照（再运行本命令选它即可撤回到“导入后”的状态）：" + reversePath;
@@ -287,13 +336,14 @@ namespace MEPTools.ExportTools.ExportSheet
 
         private static bool ConfirmRollback(List<UndoItem> todo, List<string> notes, string snapshotPath)
         {
-            int nameCount = 0, numberCount = 0, shown = 0;
+            int nameCount = 0, numberCount = 0, paramCount = 0, shown = 0;
             StringBuilder sb = new StringBuilder();
 
             foreach (UndoItem item in todo)
             {
                 if (item.NameAction) nameCount++;
                 if (item.NumberAction) numberCount++;
+                paramCount += item.Params.Count;
 
                 StringBuilder line = new StringBuilder();
                 line.Append("第 ").Append(item.RowIndex).Append(" 行  主键 ").Append(item.Sheet.Id.IntegerValue);
@@ -303,8 +353,15 @@ namespace MEPTools.ExportTools.ExportSheet
                     line.Append("  |  名称 ").Append(item.NameFrom).Append(" → ").Append(item.NameTo);
                     if (item.NameOccupiedHint) line.Append("（目标名已存在，可能被 Revit 拒绝）");
                 }
+                if (item.Params.Count > 0) line.Append("  |  参数 ").Append(item.Params.Count).Append(" 处");
 
                 MEPLogger.Instance.AppendLine("[回退] " + line);
+                foreach (SheetInfoParams.ParamChange param in item.Params)
+                {
+                    MEPLogger.Instance.AppendLine("[回退]     参数 " + param.Name + "：" +
+                                                  SheetInfoSafety.Shorten(param.OldValue, 24) + " → " +
+                                                  SheetInfoSafety.Shorten(param.NewValue, 24));
+                }
 
                 if (shown < MaxPreviewRows)
                 {
@@ -326,7 +383,8 @@ namespace MEPTools.ExportTools.ExportSheet
             sb.AppendLine("凭据：" + snapshotPath);
 
             TaskDialog dialog = new TaskDialog("撤销图纸导入");
-            dialog.MainInstruction = "确认回退 " + todo.Count + " 张图纸？（名称 " + nameCount + " 张 / 编号 " + numberCount + " 张）";
+            dialog.MainInstruction = "确认回退 " + todo.Count + " 张图纸？（名称 " + nameCount + " 张 / 编号 " +
+                                     numberCount + " 张 / 参数 " + paramCount + " 处）";
             dialog.MainContent = sb.ToString();
             dialog.CommonButtons = TaskDialogCommonButtons.Yes | TaskDialogCommonButtons.No;
             dialog.DefaultButton = TaskDialogResult.No;
@@ -372,6 +430,13 @@ namespace MEPTools.ExportTools.ExportSheet
             public bool NumberAction { get; set; }
             public string NumberFrom { get; set; }
             public string NumberTo { get; set; }
+
+            public List<SheetInfoParams.ParamChange> Params { get; private set; }
+
+            public UndoItem()
+            {
+                Params = new List<SheetInfoParams.ParamChange>();
+            }
         }
     }
 }
