@@ -151,6 +151,20 @@ namespace MEPTools.MEPGroupTag
                     swLog.Stop();
 
                     swCreate.Start();
+
+                    // 方向特许行：全局只生成一次，置于所有组最前面（第一行），不是每组前都加。
+                    // 方向取第一组（标高最高、排在最上面的组）的排序结果二选一：
+                    // 类A > 类B = 从左到右，否则从上到下；族仍按宿主元素类别从该行三列（DUCT/PIPE/TRAY）中取。
+                    if (i == 0)
+                    {
+                        string dirRuleKey = sortResult.ClassA > sortResult.ClassB ? "LR" : "TB";
+                        var dirRules = config.ExtraRules.Where(r => r.GroupIndex == dirRuleKey).ToList();
+                        foreach (var rule in dirRules)
+                        {
+                            TryCreateTagForRule(rule, group.Elements, selectedData, allTagSymbols, ductTagSym, pipeTagSym, trayTagSym, doc, activeView, basePickPt.X, ref currentY, lineSpacingFt);
+                        }
+                    }
+
                     var rulesBefore = config.ExtraRules.Where(r => r.GroupIndex == groupIndex.ToString() || r.GroupIndex == "*").ToList();
                     foreach (var rule in rulesBefore)
                     {

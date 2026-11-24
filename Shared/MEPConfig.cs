@@ -88,6 +88,30 @@ namespace MEPTools.Shared
             new KeyValuePair<string,string>("ChangeRefLevel.Msg.SummaryBody",
                 "修改完成：\n成功 {0} 个\n跳过 {1} 个\n失败 {2} 个\n\n目标标高：{3}"),
             new KeyValuePair<string,string>("ChangeRefLevel.PositionToleranceMm", "0.01"),
+
+            // ================= DuctResize：修改风管/管件尺寸（原 DuctResizeConfig.txt 迁移到此处） =================
+            new KeyValuePair<string,string>("DuctResize.TargetWidth",           "150"),
+            new KeyValuePair<string,string>("DuctResize.TargetHeight",          "400"),
+            new KeyValuePair<string,string>("DuctResize.WidthParams",
+                "Width,宽度,Duct Width 1,Duct Width 2,Duct Width 3"),
+            new KeyValuePair<string,string>("DuctResize.HeightParams",
+                "Height,高度,Duct Height"),
+            // 尺寸值比较容差（mm）：差值在此范围内视为“已是目标值”，直接跳过，不产生写操作
+            new KeyValuePair<string,string>("DuctResize.SizeToleranceMm",       "0.001"),
+            new KeyValuePair<string,string>("DuctResize.PickPrompt",
+                "请选择风管或管件，按【空格键】结束"),
+            new KeyValuePair<string,string>("DuctResize.Msg.NoPreselection",
+                "未检测到预选：请在视图中选择风管或管件，按空格键结束"),
+            new KeyValuePair<string,string>("DuctResize.Msg.NoValid",
+                "所选元素中没有可处理的风管或管件"),
+            new KeyValuePair<string,string>("DuctResize.Msg.Cancelled",         "已取消"),
+            new KeyValuePair<string,string>("DuctResize.Msg.NoChange",
+                "尺寸已是目标值，未做任何修改"),
+            new KeyValuePair<string,string>("DuctResize.Msg.Summary",
+                "已完成：风管 {0} 根，管件 {1} 个（无需修改 {2} 个）"),
+            new KeyValuePair<string,string>("DuctResize.Msg.SummaryFailed",
+                "；失败 {0} 个，详见日志"),
+            new KeyValuePair<string,string>("DuctResize.Msg.Error",             "执行出错：{0}"),
         };
 
         private static void EnsureLoaded()

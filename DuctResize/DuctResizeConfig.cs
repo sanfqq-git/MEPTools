@@ -1,105 +1,72 @@
-using System;
+// ============================================================
+// 文件：DuctResizeConfig.cs
+// 位置：DuctResize 文件夹
+// 修改重点：配置从独立 DuctResizeConfig.txt 迁移到 Shared/MEPConfig
+//          （%LocalAppData%\MEPTools\MEPTools.config 的 DuctResize.* 键）
+// ============================================================
 using System.Collections.Generic;
-using System.IO;
+using System.Globalization;
 using System.Linq;
+using MEPTools.Shared;
 
 namespace MEPTools.DuctResize
 {
+    /// <summary>
+    /// 风管尺寸修改的配置对象。
+    /// 持久化统一走 Shared/MEPConfig，不再自己维护配置文件。
+    /// </summary>
     public class ResizeConfig
     {
         public double TargetWidthMm { get; set; } = 150.0;
         public double TargetHeightMm { get; set; } = 400.0;
         public List<string> WidthParams { get; set; } = new List<string>();
         public List<string> HeightParams { get; set; } = new List<string>();
-    }
 
-    public static class ResizeConfigStorage
-    {
-        public static string ConfigPath
-        {
-            get
-            {
-                // 统一保存到 %LocalAppData%\MEPTools，规避系统盘无权限问题
-                string configDir = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "MEPTools");
-                Directory.CreateDirectory(configDir);
-                return Path.Combine(configDir, "DuctResizeConfig.txt");
-            }
-        }
-
+        /// <summary>
+        /// 从共享配置读取。默认值由 MEPConfig 内置默认表提供。
+        /// </summary>
         public static ResizeConfig Load()
         {
             var config = new ResizeConfig
             {
-                WidthParams = new List<string> { "Width", "宽度", "Duct Width 1", "Duct Width 2", "Duct Width 3" },
-                HeightParams = new List<string> { "Height", "高度", "Duct Height" },
+                TargetWidthMm = MEPConfig.GetDouble("DuctResize.TargetWidth", 150.0),
+                TargetHeightMm = MEPConfig.GetDouble("DuctResize.TargetHeight", 400.0),
+                // fallback 传 null：允许把参数名清空（等价于“不使用兜底参数名策略”）
+                WidthParams = ToList(MEPConfig.GetStringArray("DuctResize.WidthParams", ',', null)),
+                HeightParams = ToList(MEPConfig.GetStringArray("DuctResize.HeightParams", ',', null)),
             };
 
-            string path = ConfigPath;
-            if (!File.Exists(path)) return config;
-
-            try
-            {
-                foreach (var line in File.ReadAllLines(path))
-                {
-                    if (string.IsNullOrWhiteSpace(line) || line.StartsWith("#")) continue;
-
-                    int eq = line.IndexOf('=');
-                    if (eq <= 0) continue;
-
-                    string key = line.Substring(0, eq).Trim();
-                    string val = line.Substring(eq + 1).Trim();
-
-                    switch (key)
-                    {
-                        case "TargetWidth":
-                            if (double.TryParse(val, out double w)) config.TargetWidthMm = w;
-                            break;
-                        case "TargetHeight":
-                            if (double.TryParse(val, out double h)) config.TargetHeightMm = h;
-                            break;
-                        case "WidthParams":
-                            config.WidthParams = SplitCsv(val);
-                            break;
-                        case "HeightParams":
-                            config.HeightParams = SplitCsv(val);
-                            break;
-                    }
-                }
-            }
-            catch { }
+            // 尺寸兜底：0/负数写进参数会直接失败，统一修正为默认值
+            if (config.TargetWidthMm <= 0) config.TargetWidthMm = 150.0;
+            if (config.TargetHeightMm <= 0) config.TargetHeightMm = 400.0;
 
             return config;
         }
 
-        public static void Save(ResizeConfig config)
+        /// <summary>
+        /// 写回共享配置（MEPConfig.Save 只重写 MEPTools.config，不产生 Revit 文档写操作）。
+        /// </summary>
+        public void Save()
         {
-            try
-            {
-                File.WriteAllLines(ConfigPath, new[]
-                {
-                    "# 目标尺寸设置 (单位: mm)",
-                    "TargetWidth=" + config.TargetWidthMm,
-                    "TargetHeight=" + config.TargetHeightMm,
-                    "",
-                    "# 宽度参数名 (多个参数用英文逗号分隔，用于管件)",
-                    "WidthParams=" + string.Join(",", config.WidthParams ?? new List<string>()),
-                    "",
-                    "# 高度参数名 (多个参数用英文逗号分隔，用于管件)",
-                    "HeightParams=" + string.Join(",", config.HeightParams ?? new List<string>()),
-                });
-            }
-            catch { }
+            MEPConfig.SetValue("DuctResize.TargetWidth",
+                TargetWidthMm.ToString("0.###", CultureInfo.InvariantCulture));
+            MEPConfig.SetValue("DuctResize.TargetHeight",
+                TargetHeightMm.ToString("0.###", CultureInfo.InvariantCulture));
+            MEPConfig.SetValue("DuctResize.WidthParams", Join(WidthParams));
+            MEPConfig.SetValue("DuctResize.HeightParams", Join(HeightParams));
+            MEPConfig.Save();
         }
 
-        private static List<string> SplitCsv(string s)
+        private static string Join(List<string> list)
         {
-            if (string.IsNullOrWhiteSpace(s)) return new List<string>();
-            return s.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
-                    .Select(x => x.Trim())
-                    .Where(x => x.Length > 0)
-                    .ToList();
+            if (list == null) return string.Empty;
+            return string.Join(",", list.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()));
+        }
+
+        private static List<string> ToList(string[] arr)
+        {
+            if (arr == null) return new List<string>();
+            return arr.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).ToList();
         }
     }
 }

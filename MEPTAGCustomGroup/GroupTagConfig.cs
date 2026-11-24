@@ -166,9 +166,8 @@ namespace MEPTools.MEPGroupTag
             cfg.GroupToleranceMM = MEPConfig.GetDouble("TagGroup.Tolerance", 25.0);
             cfg.LineSpacingMM = MEPConfig.GetDouble("TagGroup.LineSpacing", 200.0);
             cfg.BlankLines = MEPConfig.GetInt("TagGroup.BlankLines", 2);
-            // 组间空行下限 1：为 0 时不同高度的组会紧挨着排，视觉上无法区分组。
-            // 历史配置里这一项可能被写成 0（设置窗口误操作/滚轮误改），这里统一自动修正。
-            if (cfg.BlankLines < 1) cfg.BlankLines = 1;
+            // 组间空行允许为 0：0 表示组与组之间紧挨排版，是否留空由用户在设置界面控制，这里不再强制下限。
+            if (cfg.BlankLines < 0) cfg.BlankLines = 0;
 
             cfg.MainDuctTagSymName = MEPConfig.GetString("TagGroup.MainDuctTag", "");
             cfg.MainPipeTagSymName = MEPConfig.GetString("TagGroup.MainPipeTag", "");
@@ -268,8 +267,8 @@ namespace MEPTools.MEPGroupTag
                     }
                 }
             }
-            // 与 Load() 保持一致：组间空行下限 1
-            if (cfg.BlankLines < 1) cfg.BlankLines = 1;
+            // 与 Load() 保持一致：组间空行允许为 0，仅拦截负值
+            if (cfg.BlankLines < 0) cfg.BlankLines = 0;
             return cfg;
         }
     }
@@ -337,8 +336,8 @@ namespace MEPTools.MEPGroupTag
             this.Controls.Add(lblSpacing); this.Controls.Add(nudLineSpacing);
 
             var lblBlank = new Label { Text = "组间空行数:", Location = new Point(480, y + 3), AutoSize = true };
-            // 下限 1：组间空行为 0 时不同高度的组会紧挨一起，用户无法区分组
-            nudBlankLines = new NumericUpDown { Location = new Point(570, y), Width = 80, Minimum = 1, Maximum = 10 };
+            // 下限 0：0 表示组间紧挨排版，是否留空由用户控制
+            nudBlankLines = new NumericUpDown { Location = new Point(570, y), Width = 80, Minimum = 0, Maximum = 10 };
             this.Controls.Add(lblBlank); this.Controls.Add(nudBlankLines);
             y += gap;
 
@@ -393,6 +392,7 @@ namespace MEPTools.MEPGroupTag
             var colPosition = new DataGridViewComboBoxColumn { Name = "GroupIndex", HeaderText = "插入位置", FillWeight = 15, ValueType = typeof(string) };
             var positions = new List<string> { 
                 "每一组前", "每一组后",
+                "从左到右", "从上到下",
                 "第1组前", "第1组后", "第2组前", "第2组后", "第3组前", "第3组后", "第4组前", "第4组后", "第5组前", "第5组后",
                 "第6组前", "第6组后", "第7组前", "第7组后", "第8组前", "第8组后", "第9组前", "第9组后", "第10组前", "第10组后"
             };
@@ -588,7 +588,7 @@ namespace MEPTools.MEPGroupTag
         {
             nudTolerance.Value = (decimal)_config.GroupToleranceMM;
             nudLineSpacing.Value = (decimal)_config.LineSpacingMM;
-            nudBlankLines.Value = Math.Max(1, _config.BlankLines);
+            nudBlankLines.Value = _config.BlankLines;
 
             txtMainDuct.Text = _config.MainDuctTagSymName ?? "";
             txtMainPipe.Text = _config.MainPipeTagSymName ?? "";
@@ -625,6 +625,8 @@ namespace MEPTools.MEPGroupTag
                 string displayPos = "";
                 if (rule.GroupIndex == "*") displayPos = "每一组前";
                 else if (rule.GroupIndex == "*After") displayPos = "每一组后";
+                else if (rule.GroupIndex == "LR") displayPos = "从左到右";
+                else if (rule.GroupIndex == "TB") displayPos = "从上到下";
                 else if (rule.GroupIndex.StartsWith("After_")) displayPos = $"第{rule.GroupIndex.Replace("After_", "")}组后";
                 else displayPos = $"第{rule.GroupIndex}组前";
 
@@ -682,7 +684,7 @@ namespace MEPTools.MEPGroupTag
 
                         nudTolerance.Value = (decimal)_config.GroupToleranceMM;
                         nudLineSpacing.Value = (decimal)_config.LineSpacingMM;
-                        nudBlankLines.Value = Math.Max(1, _config.BlankLines);
+                        nudBlankLines.Value = _config.BlankLines;
 
                         txtMainDuct.Text = _config.MainDuctTagSymName ?? "";
                         txtMainPipe.Text = _config.MainPipeTagSymName ?? "";
@@ -753,6 +755,8 @@ namespace MEPTools.MEPGroupTag
                 }
                 else if (posStr == "每一组前") gIdx = "*";
                 else if (posStr == "每一组后") gIdx = "*After";
+                else if (posStr == "从左到右") gIdx = "LR";
+                else if (posStr == "从上到下") gIdx = "TB";
 
                 string tText = row.Cells["TagText"].Value?.ToString()?.Trim() ?? "";
                 string dSym = row.Cells["DuctTagSym"].Value?.ToString()?.Trim() ?? "";
