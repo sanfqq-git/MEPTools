@@ -61,17 +61,17 @@ if errorlevel 1 (
 del "%COMMIT_FILE%" >nul 2>&1
 
 echo.
-echo 正在推送到 origin 和 GitHub...
-git push origin && git push GitHub
+echo 正在推送到 origin 和 github...
+git push origin && git push github
 if errorlevel 1 (
     echo.
-    echo ⚠️ 推送失败（origin 或 GitHub 其中一处出错）。commit 已创建，可手动重推。
+    echo ⚠️ 推送失败（origin 或 github 其中一处出错）。commit 已创建，可手动重推。
     pause
     exit /b
 )
 
 echo.
-echo ✅ 全部完成：已提交并推送到 origin 和 GitHub。
+echo ✅ 全部完成：已提交并推送到 origin 和 github。
 echo =========================================
 pause
 endlocal
