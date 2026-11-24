@@ -133,12 +133,15 @@ namespace MEPTools.ExportTools.Common.Excel
         private static string BuildSheet(SimpleTable table)
         {
             StringBuilder sb = new StringBuilder();
-            sb.Append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
-            sb.Append("<worksheet xmlns=\"" + NsMain + "\"><sheetData>");
 
             int width = table.ColumnCount;
             foreach (List<string> row in table.Rows)
                 if (row.Count > width) width = row.Count;
+
+            sb.Append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
+            sb.Append("<worksheet xmlns=\"" + NsMain + "\">");
+            sb.Append(BuildColumns(table, width));
+            sb.Append("<sheetData>");
 
             for (int r = -1; r < table.Rows.Count; r++)
             {
@@ -159,6 +162,36 @@ namespace MEPTools.ExportTools.Common.Excel
 
             sb.Append("</sheetData></worksheet>");
             return sb.ToString();
+        }
+
+        /// <summary>隐藏列声明：连续隐藏列合并为一段 &lt;col min max hidden="1"/&gt;。</summary>
+        private static string BuildColumns(SimpleTable table, int width)
+        {
+            if (table == null || table.HiddenColumns == null) return string.Empty;
+
+            StringBuilder sb = new StringBuilder();
+            int start = -1;
+            for (int c = 0; c < width; c++)
+            {
+                bool hidden = c < table.HiddenColumns.Count && table.HiddenColumns[c];
+                if (hidden)
+                {
+                    if (start < 0) start = c;
+                }
+                else if (start >= 0)
+                {
+                    AppendCol(sb, start, c - 1);
+                    start = -1;
+                }
+            }
+            if (start >= 0) AppendCol(sb, start, width - 1);
+
+            return sb.Length == 0 ? string.Empty : "<cols>" + sb.ToString() + "</cols>";
+        }
+
+        private static void AppendCol(StringBuilder sb, int fromIndex, int toIndex)
+        {
+            sb.Append("<col min=\"" + (fromIndex + 1) + "\" max=\"" + (toIndex + 1) + "\" width=\"9\" hidden=\"1\" customWidth=\"1\"/>");
         }
 
         private static string GetSafeSheetName(IList<SimpleTable> sheets, int index)
@@ -216,9 +249,33 @@ namespace MEPTools.ExportTools.Common.Excel
 
         // ================= 读 =================
 
+        /// <summary>
+        /// 打开 .xlsx 包（只读）。
+        ///
+        /// 为什么不用 ZipFile.OpenRead：它内部请求 FileShare.Read（我打开时别人只许读），
+        /// Excel 打开工作簿时一直持有可写句柄，协商失败 → IOException「文件正被另一进程使用」。
+        /// 这里改用 FileShare.ReadWrite，允许与 Excel 共存（读的是磁盘上已保存的内容）。
+        ///
+        /// 为什么先整包读成内存快照：ZipArchive 是懒加载，解析期间会反复读底层流，
+        /// 若 Excel 恰在此时保存（整包重写）就会读到半新半旧的数据；先复制一份再解析最稳。
+        /// </summary>
+        private static ZipArchive OpenPackage(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                throw new FileNotFoundException("找不到表格文件：" + path, path);
+
+            MemoryStream snapshot = new MemoryStream();
+            using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                fs.CopyTo(snapshot);
+            }
+            snapshot.Position = 0;
+            return new ZipArchive(snapshot, ZipArchiveMode.Read);
+        }
+
         public static List<string> GetSheetNames(string path)
         {
-            using (ZipArchive zip = ZipFile.OpenRead(path))
+            using (ZipArchive zip = OpenPackage(path))
             {
                 XDocument workbook = LoadXml(zip, "xl/workbook.xml");
                 if (workbook == null) return new List<string>();
@@ -242,7 +299,7 @@ namespace MEPTools.ExportTools.Common.Excel
             if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) throw new FileNotFoundException(path);
 
             List<SimpleTable> result = new List<SimpleTable>();
-            using (ZipArchive zip = ZipFile.OpenRead(path))
+            using (ZipArchive zip = OpenPackage(path))
             {
                 XDocument workbook = LoadXml(zip, "xl/workbook.xml");
                 if (workbook == null) return result;

@@ -12,6 +12,12 @@ namespace MEPTools.ExportTools.Common.Excel
         public List<string> Headers { get; private set; }
         public List<List<string>> Rows { get; private set; }
 
+        /// <summary>
+        /// 与 Headers 一一对应：true = 该列在 Excel 里隐藏。
+        /// 隐藏列是给程序校验用的基线，界面上不该让用户去改。
+        /// </summary>
+        public List<bool> HiddenColumns { get; private set; }
+
         /// <summary>该表在 Excel 里对应的 Sheet 名（可空，空则自动取名）。</summary>
         public string SheetName { get; set; }
 
@@ -19,6 +25,8 @@ namespace MEPTools.ExportTools.Common.Excel
         {
             Headers = new List<string>(headers ?? new string[0]);
             Rows = new List<List<string>>();
+            HiddenColumns = new List<bool>();
+            for (int i = 0; i < Headers.Count; i++) HiddenColumns.Add(false);
         }
 
         public int ColumnCount
@@ -35,7 +43,18 @@ namespace MEPTools.ExportTools.Common.Excel
 
         public void AddColumn(string header)
         {
-            Headers.Add(header);
+            AddColumn(header, false);
+        }
+
+        public void AddColumn(string header, bool hidden)
+        {
+            Headers.Add(header ?? string.Empty);
+            HiddenColumns.Add(hidden);
+        }
+
+        public bool IsColumnHidden(int columnIndex)
+        {
+            return columnIndex >= 0 && columnIndex < HiddenColumns.Count && HiddenColumns[columnIndex];
         }
 
         public void AddRow(params string[] values)
@@ -49,12 +68,12 @@ namespace MEPTools.ExportTools.Common.Excel
             SimpleTable table = new SimpleTable();
             if (rows == null || rows.Count == 0) return table;
 
-            foreach (string value in rows[0]) table.Headers.Add(value ?? string.Empty);
+            foreach (string value in rows[0]) table.AddColumn(value ?? string.Empty);
             for (int i = 1; i < rows.Count; i++)
             {
                 List<string> row = new List<string>();
                 foreach (string value in rows[i]) row.Add(value ?? string.Empty);
-                table.Rows.Add(row);
+                table.AddRow(row.ToArray());
             }
             return table;
         }
