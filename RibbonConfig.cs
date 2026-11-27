@@ -35,6 +35,7 @@ namespace MEPTools
                 // 2. 选择工具
                 new ButtonConfig { PanelName = "连接与翻弯", Id = "MEPTools.Btn_SelectConnected", Text = "选择连接组", ToolTip = "选中任意一根 MEP 管后，自动选中与之物理相连的整组管道", CommandType = typeof(MEPTools.MEPConnector.Selection.SelectConnectedCommand), PulldownGroup = "选择工具" },
                 new ButtonConfig { PanelName = "连接与翻弯", Id = "MEPTools.Btn_SelectConnectedSameSystem", Text = "选择同系统连接组", ToolTip = "仅选中与起点同系统类型的管道；线槽按大类匹配", CommandType = typeof(MEPTools.MEPConnector.Selection.SelectConnectedSameSystemCommand), PulldownGroup = "选择工具" },
+                new ButtonConfig { PanelName = "连接与翻弯", Id = "MEPTools.Btn_ConnectorProbe", Text = "连接拓扑诊断", ToolTip = "只读：导出选中 MEP 图元的连接器链路与周边管件到日志，用于排查连通性", CommandType = typeof(MEPTools.MEPConnector.Probe.ConnectorProbeCommand), PulldownGroup = "选择工具" },
 
                 // 3. 翻弯工具
                 new ButtonConfig { PanelName = "连接与翻弯", Id = "MEPTools.Btn_HighLowSaddleBend", Text = "高低翻弯", ToolTip = "高低差生成马鞍翻弯", CommandType = typeof(MEPTools.MEPHighLowSaddleBend.Command), PulldownGroup = "翻弯工具" },
@@ -60,10 +61,12 @@ namespace MEPTools
                 new ButtonConfig { PanelName = "对齐与标记", Id = "MEPTools.Btn_TagStackOnly", Text = "标记仅堆叠", ToolTip = "保持选中的标记现有相对顺序，统一调整上下堆叠间距", CommandType = typeof(MEPTools.MEPTagAlignLeft.CommandStackOnly), PulldownGroup = "标记与排版" },
                 new ButtonConfig { PanelName = "对齐与标记", Id = "MEPTools.Btn_TagAlignSettings", Text = "标记对齐设置", ToolTip = "设置标记左对齐和堆叠的行距（毫米）", CommandType = typeof(MEPTools.MEPTagAlignLeft.CommandSetting), PulldownGroup = "标记与排版" },
                 new ButtonConfig { PanelName = "对齐与标记", Id = "MEPTools.Btn_TagLeaderStyle60", Text = "MEPTag60°", ToolTip = "将选中的标记修改引线为60度折线", CommandType = typeof(MEPTools.TagLeaderStyle60.Command), PulldownGroup = "标记与排版" },
+                new ButtonConfig { PanelName = "对齐与标记", Id = "MEPTools.Btn_BoxLeader", Text = "方形引线", ToolTip = "单选一根 MEP（本图或 LINK），沿管线方向生成闭合矩形框并引出 P1-P2 引线", CommandType = typeof(MEPTools.BoxLeader.BoxLeaderCmd), PulldownGroup = "标记与排版" },
 
                 // ================= 面板3：管理与协同 =================
                 new ButtonConfig { PanelName = "管理与协同", Id = "MEPTools.Btn_LinkElementWallHole", Text = "链接墙洞", ToolTip = "在链接模型上批量创建墙洞", CommandType = typeof(MEPTools.LinkElementWallHole.Command), PulldownGroup = "墙洞工具" },
                 new ButtonConfig { PanelName = "管理与协同", Id = "MEPTools.Btn_WallHoleSettings", Text = "墙洞设置", ToolTip = "配置墙洞族、类型、标高、参数名等", CommandType = typeof(MEPTools.LinkElementWallHole.Cmd_WallHoleSettings), PulldownGroup = "墙洞工具" },
+                new ButtonConfig { PanelName = "管理与协同", Id = "MEPTools.Btn_HoleCheck", Text = "墙洞体检", ToolTip = "只读检查选中墙洞：孔径偏小/偏大、MEP 出孔外、孔位偏移、参数与几何不符；结果列表 + 视图临时着色", CommandType = typeof(MEPTools.LinkElementWallHole.Cmd_HoleCheck), PulldownGroup = "墙洞工具" },
                 
                 new ButtonConfig { PanelName = "管理与协同", Id = "MEPTools.Btn_HideWorkset", Text = "仅隐藏当前工作集", ToolTip = "选择参考元素，将其所属工作集在当前视图中隐藏", CommandType = typeof(MEPTools.WorksetManager.CmdHideWorkset), PulldownGroup = "工作集管理" },
                 new ButtonConfig { PanelName = "管理与协同", Id = "MEPTools.Btn_IsolateWorkset", Text = "仅显示当前工作集", ToolTip = "选择参考元素，在当前视图中仅显示其所属工作集", CommandType = typeof(MEPTools.WorksetManager.CmdIsolateWorkset), PulldownGroup = "工作集管理" },
@@ -80,11 +83,12 @@ namespace MEPTools
                 // ================= 面板4：实用工具 =================
                 new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_MEPBatchBreak", Text = "批量打断管线", ToolTip = "批量执行保留原 ID 的打断并恢复连接", CommandType = typeof(MEPTools.MEPBatchBreak.Command), PulldownGroup = "修改工具" },
                 new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_RemoveDuplicateElements", Text = "删除重复图元", ToolTip = "查找并删除当前视图中重复的 MEP 图元", CommandType = typeof(MEPTools.RemoveDuplicateElements.Command), PulldownGroup = "修改工具" },
-                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_ElevationRenamer", Text = "标高重命名", ToolTip = "批量重命名或规范化 Revit 标高名称", CommandType = typeof(MEPTools.RevitElevationRenamer.Command), PulldownGroup = "修改工具" },
+                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_ElevationRenamer", Text = "剖立面视图重命名", ToolTip = "批量重命名或规范化 Revit 剖立面视图名称", CommandType = typeof(MEPTools.RevitElevationRenamer.Command), PulldownGroup = "修改工具" },
                 new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_SystemChecker", Text = "系统检查", ToolTip = "检查 MEP 系统的连通性及参数完整性", CommandType = typeof(MEPTools.MEPChecker.Command), PulldownGroup = "修改工具" },
                 new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_LastChangedBy", Text = "修改者查询", ToolTip = "查询选中图元的所有者（借用状态）、最后修改者、创建者及与中心模型的同步状态", CommandType = typeof(MEPTools.MEPChecker.LastChangedByChecker), PulldownGroup = "修改工具" },
                 new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_DuctResize", Text = "DUCT更新尺寸", ToolTip = "更新 DUCT 尺寸", CommandType = typeof(MEPTools.DuctResize.Command), PulldownGroup = "修改工具" },
                 new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_RemakeInPlace", Text = "原地重制", ToolTip = "原地删除并重建或从 LINK 复制", CommandType = typeof(MEPTools.RemakeInPlaceCommands.Command), PulldownGroup = "修改工具" },
+                new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_ChangeReferenceLevel", Text = "修改参照标高", ToolTip = "批量把选中元素的参照标高改成目标标高，并自动保持其原有空间位置（Z 位移自动补偿）", CommandType = typeof(MEPTools.ChangeReferenceLevel.ChangeReferenceLevelCommand), PulldownGroup = "修改工具" },
 
                 // ================= 面板4：实用工具 / 视图工具 =================
                 new ButtonConfig { PanelName = "实用工具", Id = "MEPTools.Btn_ViewTemplateCopy", Text = "复制视图样板", ToolTip = "从当前已打开的其它文件里挑视图样板（View Template），复制到当前文档", CommandType = typeof(MEPTools.FilterCopy.Commands.ViewTemplateCopyCommand), PulldownGroup = "视图工具" },

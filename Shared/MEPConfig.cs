@@ -58,6 +58,11 @@ namespace MEPTools.Shared
             // 排版完成后是否把本次生成的 Tag 全部选中（关掉可省一次高亮刷新，约 20+ ms）
             new KeyValuePair<string,string>("TagGroup.SelectCreatedTags",      "true"),
 
+            // ================= BoxLeader：方形引线 =================
+            new KeyValuePair<string,string>("Leader.W",                        "50"),
+            new KeyValuePair<string,string>("Leader.EQ",                       "50"),
+            new KeyValuePair<string,string>("Leader.LineStyle",                ""),
+
             // ================= ExportLocal：LINK/BIM360 输出到本地 =================
             new KeyValuePair<string,string>("ExportLocal.LinkedSubFolder",      "LinkedModels"),
             new KeyValuePair<string,string>("ExportLocal.CloudSubFolder",       "CloudModels"),

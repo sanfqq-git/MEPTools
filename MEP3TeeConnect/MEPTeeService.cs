@@ -171,6 +171,14 @@ namespace MEPTools.MEP3TeeConnect
                     $"{MEPTeeCalculator.MinBLengthMm}mm，请调整选择");
             }
 
+            // ---- 2. 线槽照搬手工拓扑：主管 A 通长不打断、不插三通/大小头 ----
+            //   立管立在平面交点，顶端搭接主管（不建逻辑连接）；仅 B 侧立管 ↔ B 插等径弯头。
+            if (p.ElemType == TeeElementType.CableTray)
+            {
+                BuildCableTrayDirect(doc, p, doc.GetElement(p.IdB), crossPtB);
+                return;
+            }
+
             // ---- 2. 打断 A 于交点 ----
             ElementId other = BreakCurve(doc, p.IdA, crossPtA, p.ElemType);
             if (other == null || other == ElementId.InvalidElementId)
@@ -179,6 +187,10 @@ namespace MEPTools.MEP3TeeConnect
             ElementId aRight = other;
             doc.Regenerate();
             _log.AppendLine($"  A 打断：左段={aLeft.IntegerValue}，右段={aRight.IntegerValue}");
+
+            // A 侧参考连接器（三通侧水平管宽边方向，用于立管截面朝向对齐）
+            Connector aRef = FindConnectorAtPoint(doc.GetElement(aLeft), crossPtA)
+                          ?? FindConnectorAtPoint(doc.GetElement(aRight), crossPtA);
 
             // ---- 3~5. 竖直段 + 三通 + 大小头 ----
             XYZ riserTop = new XYZ(p.CrossPoint.X, p.CrossPoint.Y, p.ZA);
@@ -197,6 +209,9 @@ namespace MEPTools.MEP3TeeConnect
                     if (riser == null) throw new InvalidOperationException("立管创建失败");
                     doc.Regenerate();
                     _log.AppendLine($"  立管：ID={riser.Id.IntegerValue}");
+
+                    // 先对齐三通侧(A)截面朝向
+                    AlignRiserToReference(doc, p, riser, riserTop, aRef, "三通侧(A)");
 
                     tee = CreateTee(doc, aLeft, aRight, crossPtA,
                         FindConnectorAtPoint(riser, riserTop), p);
@@ -229,12 +244,57 @@ namespace MEPTools.MEP3TeeConnect
                 throw new InvalidOperationException(
                     $"弯头连接器未找齐（立管底={rBot != null}, B 近端={bNear != null}）");
 
+            // 两端校验：A 侧已先对齐，这里复核 B 侧弯头；不一致时以 B（刚性弯头）为准转正立管
+            AlignRiserToReference(doc, p, riser, riserBot, bNear, "弯头侧(B)");
+            doc.Regenerate();
+
             FamilyInstance elbow = doc.Create.NewElbowFitting(rBot, bNear);
             if (elbow == null)
                 throw new InvalidOperationException(
                     "弯头创建失败。规格：立管 " + FmtConnSize(rBot) +
                     " / B " + FmtConnSize(bNear) +
                     "。两者均为 B 规格，请确认项目中有匹配的等径弯头族。");
+            doc.Regenerate();
+            _log.AppendLine($"  弯头：ID={elbow.Id.IntegerValue}，" +
+                            $"族={elbow.Symbol?.Family?.Name}");
+        }
+
+        // =====================================================================
+        // 线槽直连拓扑（照搬手工模型）：
+        //   · 主管 A 通长保留，不打断、不插三通/大小头/底座等任何管件；
+        //   · 立管立在平面交点，顶端搁在主管标高上（视觉搭接，连接器不逻辑连通）；
+        //   · B 侧：立管底端 ↔ B 近端，按现有做法插等径弯头。
+        // =====================================================================
+        private void BuildCableTrayDirect(Document doc, TeePair p,
+            Element elemB, XYZ crossPtB)
+        {
+            XYZ riserTop = new XYZ(p.CrossPoint.X, p.CrossPoint.Y, p.ZA);
+            XYZ riserBot = new XYZ(p.CrossPoint.X, p.CrossPoint.Y, p.ZB);
+
+            Element riser = CreateMEPCurve(doc, p.ElemType,
+                p.TypeId, p.LevelId, p.SystemTypeId,
+                p.DiameterB, p.WidthB, p.HeightB, riserTop, riserBot);
+            if (riser == null)
+                throw new InvalidOperationException("线槽立管创建失败");
+            doc.Regenerate();
+            _log.AppendLine($"  线槽立管：ID={riser.Id.IntegerValue}（顶端搭接主管，未插三通）");
+
+            Connector rBot = FindConnectorAtPoint(riser, riserBot);
+            Connector bNear = FindConnectorAtPoint(elemB, crossPtB);
+            if (rBot == null || bNear == null)
+                throw new InvalidOperationException(
+                    $"弯头连接器未找齐（立管底={rBot != null}, B 近端={bNear != null}）");
+
+            // 复核 B 侧截面朝向，不一致时转正立管（与风管同一套对齐逻辑）
+            AlignRiserToReference(doc, p, riser, riserBot, bNear, "弯头侧(B)");
+            doc.Regenerate();
+
+            FamilyInstance elbow = doc.Create.NewElbowFitting(rBot, bNear);
+            if (elbow == null)
+                throw new InvalidOperationException(
+                    "线槽弯头创建失败。规格：立管 " + FmtConnSize(rBot) +
+                    " / B " + FmtConnSize(bNear) +
+                    "。两者均为 B 规格，请确认项目中有匹配的线槽弯头族。");
             doc.Regenerate();
             _log.AppendLine($"  弯头：ID={elbow.Id.IntegerValue}，" +
                             $"族={elbow.Symbol?.Family?.Name}");
@@ -292,6 +352,11 @@ namespace MEPTools.MEP3TeeConnect
             _log.AppendLine($"  立管（B 规格）：ID={riser.Id.IntegerValue}，" +
                             $"长度={midPt.DistanceTo(riserBot) * f:F1}mm");
 
+            // 先对齐三通侧(A)截面朝向
+            Connector aRefStub = FindConnectorAtPoint(doc.GetElement(aLeft), crossPtA)
+                               ?? FindConnectorAtPoint(doc.GetElement(aRight), crossPtA);
+            AlignRiserToReference(doc, p, riser, midPt, aRefStub, "三通侧(A)");
+
             // 4. 等径三通（A 左 + A 右 + A 领口）
             tee = CreateTee(doc, aLeft, aRight, crossPtA,
                 FindConnectorAtPoint(stub, riserTop), p);
@@ -342,6 +407,11 @@ namespace MEPTools.MEP3TeeConnect
             if (riser == null) throw new InvalidOperationException("立管（B 规格）创建失败");
             doc.Regenerate();
             _log.AppendLine($"  立管（B 规格）：ID={riser.Id.IntegerValue}，无 A 领口");
+
+            // 先对齐三通侧(A)截面朝向
+            Connector aRefRed = FindConnectorAtPoint(doc.GetElement(aLeft), crossPtA)
+                              ?? FindConnectorAtPoint(doc.GetElement(aRight), crossPtA);
+            AlignRiserToReference(doc, p, riser, riserTop, aRefRed, "三通侧(A)");
 
             tee = CreateTee(doc, aLeft, aRight, crossPtA,
                 FindConnectorAtPoint(riser, riserTop), p);
@@ -546,6 +616,72 @@ namespace MEPTools.MEP3TeeConnect
                 if (flat.GetLength() > 1e-6) return flat.Normalize();
             }
             return null;
+        }
+
+        // =====================================================================
+        // 矩形立管截面朝向对齐（防弯头/三通处出现扭曲大小头）
+        //   水平管宽边在水平面内垂直于管轴；立管竖直走向，两个截面边都在平面内，
+        //   Duct.Create 默认朝向不跟随参考管，错 90° 时弯头两侧宽高对不上，
+        //   Revit 只能退化成扭转变径。这里按参考管宽边(BasisX)把立管绕竖轴转正。
+        //   圆形 / 正方形 / 读不到朝向 → 跳过；旋转失败只记日志，不阻断连接。
+        // =====================================================================
+        private void AlignRiserToReference(Document doc, TeePair p, Element riser,
+            XYZ endPt, Connector reference, string sideLabel)
+        {
+            if (riser == null || reference == null) return;
+            if (p.ElemType == TeeElementType.Pipe) return;
+
+            var line = (riser.Location as LocationCurve)?.Curve as Line;
+            if (line == null || Math.Abs(line.Direction.Z) <= 0.99) return;
+
+            doc.Regenerate();
+
+            Connector rConn = FindConnectorAtPoint(riser, endPt);
+            if (rConn == null || rConn.Shape != ConnectorProfileType.Rectangular) return;
+            if (reference.Shape != ConnectorProfileType.Rectangular) return;
+            if (rConn.Width <= SizeEpsilon || rConn.Height <= SizeEpsilon) return;
+            if (Math.Abs(rConn.Width - rConn.Height) < SizeEpsilon) return;   // 正方形无朝向
+
+            XYZ vecRef = ProjectPlanar(reference.CoordinateSystem?.BasisX);
+            XYZ vecRiser = ProjectPlanar(rConn.CoordinateSystem?.BasisX);
+            if (vecRef == null || vecRiser == null) return;
+
+            double angle = PlanarSignedAngle(vecRef, vecRiser);
+            const double tolRad = Math.PI / 180.0;
+            if (Math.Abs(angle) <= tolRad)
+            {
+                _log.AppendLine($"  立管{sideLabel}截面朝向已顺拐（差 {Math.Abs(angle) * 180.0 / Math.PI:F1}°）");
+                return;
+            }
+
+            try
+            {
+                Line axis = Line.CreateUnbound(endPt, XYZ.BasisZ);
+                ElementTransformUtils.RotateElement(doc, riser.Id, axis, angle);
+                doc.Regenerate();
+                _log.AppendLine($"  ✓ 立管{sideLabel}截面已旋转 {angle * 180.0 / Math.PI:F1}° 对齐参考管宽边");
+            }
+            catch (Exception ex)
+            {
+                _log.AppendLine($"  ✗ 立管{sideLabel}截面旋转失败（已跳过，不阻断）：{ex.Message}");
+            }
+        }
+
+        /// <summary>取向量水平面投影并归一化；接近竖直时返回 null</summary>
+        private static XYZ ProjectPlanar(XYZ v)
+        {
+            if (v == null) return null;
+            XYZ f = new XYZ(v.X, v.Y, 0);
+            return f.GetLength() > 1e-6 ? f.Normalize() : null;
+        }
+
+        /// <summary>平面内从 b(当前) 转到 a(目标) 的有符号角（弧度，绕 Z 右手系）</summary>
+        private static double PlanarSignedAngle(XYZ a, XYZ b)
+        {
+            double dot = a.DotProduct(b);
+            double cross = a.X * b.Y - a.Y * b.X;
+            double ang = Math.Acos(Math.Max(-1.0, Math.Min(1.0, dot)));
+            return cross < 0 ? -ang : ang;
         }
 
         // =====================================================================

@@ -1,0 +1,228 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Windows.Forms;
+using Autodesk.Revit.Attributes;
+using Autodesk.Revit.DB;
+using Autodesk.Revit.UI;
+
+namespace MEPTools.QuickParamEditor
+{
+    [Transaction(TransactionMode.Manual)]
+    public class QuickParamEditorCommand : IExternalCommand
+    {
+        public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
+        {
+            UIDocument uidoc = commandData.Application.ActiveUIDocument;
+            Document doc = uidoc.Document;
+
+            if (!doc.IsFamilyDocument)
+            {
+                TaskDialog.Show("提示", "此工具仅在族编辑器中可用。");
+                return Result.Cancelled;
+            }
+
+            FamilyManager fm = doc.FamilyManager;
+            if (fm == null) return Result.Failed;
+
+            // 实例化并显示我们的搜索编辑窗口
+            using (var form = new ParamSearchForm(fm, doc))
+            {
+                form.ShowDialog();
+            }
+
+            return Result.Succeeded;
+        }
+    }
+
+    // 参数搜索面板
+    public class ParamSearchForm : Form
+    {
+        private FamilyManager _familyManager;
+        private Document _doc;
+        private TextBox _searchBox;
+        private ListBox _paramList;
+        private TextBox _valueBox;
+        private Button _applyButton;
+        private List<FamilyParameter> _allParams;
+
+        public ParamSearchForm(FamilyManager fm, Document doc)
+        {
+            _familyManager = fm;
+            _doc = doc;
+            InitializeComponent();
+            LoadParams();
+        }
+
+        private void InitializeComponent()
+        {
+            this.Text = "族参数快速搜索/编辑";
+            this.Size = new System.Drawing.Size(400, 450);
+            this.StartPosition = FormStartPosition.CenterScreen;
+
+            // 搜索框
+            Label lblSearch = new Label { Text = "搜索参数:", Top = 10, Left = 10, Width = 70 };
+            _searchBox = new TextBox { Top = 10, Left = 80, Width = 290 };
+            _searchBox.TextChanged += (s, e) => FilterParams(_searchBox.Text);
+
+            // 参数列表
+            _paramList = new ListBox { Top = 40, Left = 10, Width = 360, Height = 250 };
+            _paramList.SelectedIndexChanged += ParamList_SelectedIndexChanged;
+
+            // 值编辑区
+            Label lblValue = new Label { Text = "参数值:", Top = 300, Left = 10, Width = 70 };
+            _valueBox = new TextBox { Top = 300, Left = 80, Width = 290 };
+            
+            // 应用按钮
+            _applyButton = new Button { Text = "应用修改", Top = 340, Left = 250, Width = 120 };
+            _applyButton.Click += ApplyButton_Click;
+
+            // 添加控件
+            this.Controls.Add(lblSearch);
+            this.Controls.Add(_searchBox);
+            this.Controls.Add(_paramList);
+            this.Controls.Add(lblValue);
+            this.Controls.Add(_valueBox);
+            this.Controls.Add(_applyButton);
+        }
+
+        private void LoadParams()
+        {
+            // 获取所有参数（包括内置和共享）
+            _allParams = _familyManager.GetParameters().ToList();
+            UpdateListBox(_allParams);
+        }
+
+        private void FilterParams(string searchText)
+        {
+            if (string.IsNullOrWhiteSpace(searchText))
+            {
+                UpdateListBox(_allParams);
+                return;
+            }
+
+            var filtered = _allParams
+                .Where(p => p.Definition.Name.IndexOf(searchText, StringComparison.OrdinalIgnoreCase) >= 0)
+                .ToList();
+            UpdateListBox(filtered);
+        }
+
+        private void UpdateListBox(List<FamilyParameter> parameters)
+        {
+            _paramList.Items.Clear();
+            foreach (var param in parameters)
+            {
+                // 显示格式：参数名 (类型)
+                string typeStr = param.Definition.GetDataType().TypeId;
+                _paramList.Items.Add($"{param.Definition.Name} [{typeStr}]");
+            }
+            // 存一份当前显示的参数列表，方便后续点选取值
+            _paramList.Tag = parameters; 
+        }
+
+        private void ParamList_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if (_paramList.SelectedIndex < 0) return;
+
+            var currentList = _paramList.Tag as List<FamilyParameter>;
+            if (currentList == null) return;
+
+            FamilyParameter selectedParam = currentList[_paramList.SelectedIndex];
+            _valueBox.Text = GetParamValueString(selectedParam);
+            
+            // 如果是只读参数，禁用编辑框
+            _valueBox.Enabled = !selectedParam.IsReadOnly;
+            _applyButton.Enabled = !selectedParam.IsReadOnly;
+        }
+
+        private string GetParamValueString(FamilyParameter param)
+        {
+            // 获取当前FamilyType下的值
+            FamilyType currentType = _familyManager.CurrentType;
+            if (currentType == null) return string.Empty;
+
+            object val = currentType.AsValueString(param);
+            if (val != null) return val.ToString();
+
+            // 如果没有AsValueString，尝试AsString
+            string strVal = currentType.AsString(param);
+            return strVal ?? string.Empty;
+        }
+
+        private void ApplyButton_Click(object sender, EventArgs e)
+        {
+            if (_paramList.SelectedIndex < 0) return;
+
+            var currentList = _paramList.Tag as List<FamilyParameter>;
+            if (currentList == null) return;
+
+            FamilyParameter selectedParam = currentList[_paramList.SelectedIndex];
+            string newValue = _valueBox.Text;
+
+            using (Transaction trans = new Transaction(_doc, "修改族参数值"))
+            {
+                trans.Start();
+                try
+                {
+                    // 这里需要根据参数类型做不同的处理
+                    // 为了简化，我们只处理字符串和数字类型，你可以根据实际需要扩展
+                    if (selectedParam.Definition.GetDataType() == SpecTypeId.String.Text)
+                    {
+                        _familyManager.Set(selectedParam, newValue);
+                    }
+                    else if (selectedParam.Definition.GetDataType() == SpecTypeId.Number)
+                    {
+                        if (double.TryParse(newValue, out double numValue))
+                        {
+                            _familyManager.Set(selectedParam, numValue);
+                        }
+                        else
+                        {
+                            TaskDialog.Show("错误", "请输入有效的数字。");
+                            trans.RollBack();
+                            return;
+                        }
+                    }
+                    else if (selectedParam.Definition.GetDataType() == SpecTypeId.Boolean.YesNo)
+                    {
+                        if (bool.TryParse(newValue, out bool boolValue))
+                        {
+                            _familyManager.Set(selectedParam, boolValue);
+                        }
+                        else
+                        {
+                            // 尝试处理 "1", "0", "yes", "no"
+                            if (newValue.ToLower() == "1" || newValue.ToLower() == "yes") _familyManager.Set(selectedParam, 1);
+                            else if (newValue.ToLower() == "0" || newValue.ToLower() == "no") _familyManager.Set(selectedParam, 0);
+                            else
+                            {
+                                TaskDialog.Show("错误", "请输入 True/False 或 1/0。");
+                                trans.RollBack();
+                                return;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // 其他类型（如长度、角度）暂时直接尝试字符串赋值（可能不严谨，需测试）
+                        try {
+                            _familyManager.Set(selectedParam, newValue);
+                        } catch {
+                            TaskDialog.Show("提示", "当前参数类型暂不支持此输入格式，请检查。");
+                            trans.RollBack();
+                            return;
+                        }
+                    }
+
+                    trans.Commit();
+                    // 成功提示，可省略
+                }
+                catch (Exception ex)
+                {
+                    trans.RollBack();
+                    TaskDialog.Show("错误", "修改失败: " + ex.Message);
+                }
+            }
+        }
+    }
+}

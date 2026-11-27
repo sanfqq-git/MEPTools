@@ -50,6 +50,11 @@
     <Reference Include="System.IO.Compression.FileSystem" />
   </ItemGroup>
 
+  <!-- Ribbon 图标：Resources 下的 png 编进程序集，供 App.cs 的 pack:// 路径读取 -->
+  <ItemGroup>
+    <Resource Include="Resources\*.png" />
+  </ItemGroup>
+
   <!-- 防止 obj/bin 下的自动生成文件被重复编译（SDK 默认已排除，这里双保险） -->
   <ItemGroup>
     <Compile Remove="**\obj\**\*.cs" />
